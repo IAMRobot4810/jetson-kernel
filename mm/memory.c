@@ -3866,7 +3866,6 @@ int handle_mm_fault(struct mm_struct *mm, struct vm_area_struct *vma,
 
 	if (WARN_ON(task_in_memcg_oom(current) && !(ret & VM_FAULT_OOM)))
 		mem_cgroup_oom_synchronize();
-
 	return ret;
 }
 
