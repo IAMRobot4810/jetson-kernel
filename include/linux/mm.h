@@ -170,6 +170,7 @@ extern pgprot_t protection_map[16];
 #define FAULT_FLAG_USER		0x80	/* The fault originated in userspace */
 #define FAULT_FLAG_NO_CMA      0x100    /* don't use CMA pages */
 
+
 /*
  * vm_fault is filled by the the pagefault handler and passed to the vma's
  * ->fault function. The vma's ->fault is responsible for returning a bitmask

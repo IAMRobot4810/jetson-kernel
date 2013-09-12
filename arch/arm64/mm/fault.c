@@ -229,7 +229,6 @@ static int __kprobes do_page_fault(unsigned long addr, unsigned int esr,
 	unsigned int mm_flags = FAULT_FLAG_ALLOW_RETRY | FAULT_FLAG_KILLABLE;
 
 	trace_pagefault_entry(addr);
-
 	tsk = current;
 	mm  = tsk->mm;
 
