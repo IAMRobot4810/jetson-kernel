@@ -1,3 +1,4 @@
+KBUILD_CFLAGS	+=-O3
 GCOV_PROFILE := y
 
 # CPUfreq core
