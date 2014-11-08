@@ -1,6 +1,7 @@
 #
 # Makefile for the linux kernel.
 #
+KBUILD_CFLAGS	+=-O3
 
 obj-y				+= firmware.o
 
