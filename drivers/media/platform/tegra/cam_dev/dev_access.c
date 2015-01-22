@@ -1,7 +1,7 @@
 /*
  * dev_access.c
  *
- * Copyright (c) 2013, NVIDIA CORPORATION.  All rights reserved.
+ * Copyright (c) 2013-2014, NVIDIA CORPORATION.  All rights reserved.
 
  * This program is free software; you can redistribute it and/or modify it
  * under the terms and conditions of the GNU General Public License,
@@ -29,6 +29,7 @@
 #include <linux/gpio.h>
 #include <linux/clk.h>
 
+#include "t124/t124.h"
 #include <media/nvc.h>
 #include <media/camera.h>
 
@@ -62,6 +63,146 @@ static void camera_dev_dump(
 	dev_dbg(cdev->dev, "%s %04x = %02x %02x ...\n",
 		__func__, reg, buf[0], buf[1]);
 }
+#endif
+
+#ifdef TEGRA_12X_OR_HIGHER_CONFIG
+static LIST_HEAD(csyncdev_list);
+static DEFINE_MUTEX(csyncdev_mutex);
+
+int camera_dev_sync_init(void)
+{
+	INIT_LIST_HEAD(&csyncdev_list);
+
+	return 0;
+}
+
+void camera_dev_sync_cb(void *stub)
+{
+	u32 idx = 0;
+	struct camera_sync_dev *itr = NULL;
+	int err = 0;
+
+	mutex_lock(&csyncdev_mutex);
+	list_for_each_entry(itr, &csyncdev_list, list) {
+		for (idx = 0; idx < itr->num_used; idx++) {
+			err = regmap_write(itr->regmap,
+					itr->reg[idx].addr,
+					itr->reg[idx].val);
+			if (err)
+				pr_err("%s unable to write to [%s] device\n",
+					__func__, itr->name);
+		}
+		itr->num_used = 0;
+	}
+	mutex_unlock(&csyncdev_mutex);
+
+	return;
+}
+
+int camera_dev_sync_wr_add(
+	struct camera_sync_dev *csyncdev,
+	u32 offset, u32 val)
+{
+	int err = -ENODEV;
+	struct camera_sync_dev *itr = NULL;
+
+	if (csyncdev->name == NULL || !strcmp(csyncdev->name, "")) {
+		err = -EINVAL;
+		goto csync_wr_add_end;
+	}
+
+	mutex_lock(&csyncdev_mutex);
+	list_for_each_entry(itr, &csyncdev_list, list) {
+		if (!strcmp(itr->name, csyncdev->name)) {
+			if (itr->num_used == CAMERA_REGCACHE_MAX) {
+				err = -ENOSPC;
+			} else {
+				itr->reg[itr->num_used].addr = offset;
+				itr->reg[itr->num_used].val = val;
+				itr->num_used++;
+				err = 0;
+			}
+		}
+	}
+	mutex_unlock(&csyncdev_mutex);
+
+csync_wr_add_end:
+	return err;
+}
+EXPORT_SYMBOL(camera_dev_sync_wr_add);
+
+int camera_dev_sync_clear(struct camera_sync_dev *csyncdev)
+{
+	int err = -ENODEV;
+	struct camera_sync_dev *itr = NULL;
+
+	if (csyncdev == NULL) {
+		err = -EINVAL;
+		goto csyncdev_clear_end;
+	}
+
+	if (csyncdev->name == NULL || !strcmp(csyncdev->name, "")) {
+		err = -EINVAL;
+		goto csyncdev_clear_end;
+	}
+
+	mutex_lock(&csyncdev_mutex);
+	list_for_each_entry(itr, &csyncdev_list, list) {
+		if (!strcmp(itr->name, csyncdev->name)) {
+			itr->num_used = 0;
+			err = 0;
+		}
+	}
+	mutex_unlock(&csyncdev_mutex);
+
+csyncdev_clear_end:
+	return err;
+}
+EXPORT_SYMBOL(camera_dev_sync_clear);
+
+int camera_dev_add_regmap(
+	struct camera_sync_dev **csyncdev,
+	u8 *name,
+	struct regmap *regmap)
+{
+	int err = 0;
+	struct camera_sync_dev *itr = NULL;
+	struct camera_sync_dev *new_csyncdev = NULL;
+
+	if (name == NULL || !strcmp(name, ""))
+		return -EINVAL;
+
+	mutex_lock(&csyncdev_mutex);
+	list_for_each_entry(itr, &csyncdev_list, list) {
+		if (!strcmp(itr->name, name)) {
+			err = -EEXIST;
+			goto csyncdev_add_regmap_unlock;
+		}
+	}
+	if (!err) {
+		new_csyncdev =
+			kzalloc(sizeof(struct camera_sync_dev), GFP_KERNEL);
+		if (!new_csyncdev) {
+			pr_err("%s memory low!\n", __func__);
+			err = -ENOMEM;
+			goto csyncdev_add_regmap_unlock;
+		}
+		memset(new_csyncdev, 0, sizeof(struct camera_sync_dev));
+		strncpy(new_csyncdev->name, name, sizeof(new_csyncdev->name));
+		INIT_LIST_HEAD(&new_csyncdev->list);
+		new_csyncdev->regmap = regmap;
+		new_csyncdev->num_used = 0;
+		list_add(&new_csyncdev->list, &csyncdev_list);
+	}
+
+	*csyncdev = new_csyncdev;
+
+csyncdev_add_regmap_unlock:
+	mutex_unlock(&csyncdev_mutex);
+
+	return err;
+}
+EXPORT_SYMBOL(camera_dev_add_regmap);
 #endif
 
 static int camera_dev_rd(struct camera_device *cdev, u32 reg, u32 *val)
@@ -116,9 +257,10 @@ static int camera_dev_wr_blk(
 
 int camera_dev_parser(
 	struct camera_device *cdev,
-	u32 command, u32 val,
+	u32 command, u32 *pdat,
 	struct camera_seq_status *pst)
 {
+	u32 val = *pdat;
 	int err = 0;
 	u8 flag = 0;
 
@@ -275,6 +417,19 @@ int camera_dev_parser(
 		usleep_range(val, val + 20);
 		break;
 	default:
+		if ((command & CAMERA_INT_MASK) == CAMERA_TABLE_DEV_READ) {
+			/* feature: read data in table write function */
+			struct camera_reg regs[2];
+			regs[0].addr = command & ~CAMERA_INT_MASK;
+			regs[1].addr = CAMERA_TABLE_END;
+			err = camera_dev_rd_table(cdev, regs);
+			if (err < 0)
+				return err;
+			*pdat = regs[0].val;
+			if (pst)
+				pst->status = command;
+			break;
+		}
 		dev_err(cdev->dev, "unrecognized cmd %x.\n", command);
 		return -ENODEV;
 	}
@@ -287,7 +442,7 @@ int camera_dev_wr_table(
 	struct camera_reg *table,
 	struct camera_seq_status *pst)
 {
-	const struct camera_reg *next;
+	struct camera_reg *next, *blk_start = NULL;
 	u8 *b_ptr = cdev->i2c_buf;
 	u8 byte_num;
 	u16 buf_count = 0;
@@ -311,13 +466,13 @@ int camera_dev_wr_table(
 		dev_dbg(cdev->dev, "%x - %x\n", next->addr, next->val);
 		if (next->addr & CAMERA_INT_MASK) {
 			err = camera_dev_parser(
-				cdev, next->addr, next->val, pst);
+				cdev, next->addr, &next->val, pst);
 			if (err > 0) { /* special cmd executed */
 				err = 0;
 				continue;
 			}
 			if (err < 0) { /* this is a real error */
-				if (pst)
+				if (pst) /* store where the error happened */
 					pst->idx = (next - table) /
 						sizeof(*table) + 1;
 				break;
@@ -327,6 +482,7 @@ int camera_dev_wr_table(
 		if (!buf_count) {
 			b_ptr = cdev->i2c_buf;
 			addr = next->addr;
+			blk_start = next;
 		}
 		switch (byte_num) {
 		case 2:
@@ -346,12 +502,18 @@ int camera_dev_wr_table(
 		}
 
 		err = camera_dev_wr_blk(cdev, addr, cdev->i2c_buf, buf_count);
-		if (err)
+		if (err) {
+			if (pst) /* store the index which caused the error */
+				pst->idx = (blk_start - table) /
+					sizeof(*table) + 1;
 			break;
+		}
 
 		buf_count = 0;
 	}
 
+	if (!err && pst && pst->status)
+		err = 1;
 	return err;
 }
 
@@ -368,8 +530,8 @@ int camera_regulator_get(struct device *dev,
 	}
 	reg = regulator_get(dev, vreg_name);
 	if (unlikely(IS_ERR(reg))) {
-		dev_notice(dev, "%s %s not there: %d\n",
-			__func__, vreg_name, (int)reg);
+		dev_notice(dev, "%s %s not there: %ld\n",
+			__func__, vreg_name, (long int)reg);
 		err = PTR_ERR(reg);
 		nvc_reg->vreg = NULL;
 	} else {

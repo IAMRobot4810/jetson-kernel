@@ -261,6 +261,7 @@ static void fw_free_buf(struct firmware_buf *buf)
 static char fw_path_para[256];
 static const char * const fw_path[] = {
 	fw_path_para,
+	"/system/etc/firmware",
 	"/lib/firmware/updates/" UTS_RELEASE,
 	"/lib/firmware/updates",
 	"/lib/firmware/" UTS_RELEASE,
@@ -335,7 +336,7 @@ static bool fw_get_filesystem_firmware(struct device *device,
 	__putname(path);
 
 	if (success) {
-		dev_dbg(device, "firmware: direct-loading firmware %s\n",
+		dev_info(device, "firmware: direct-loading firmware %s\n",
 			buf->fw_id);
 		mutex_lock(&fw_lock);
 		set_bit(FW_STATUS_DONE, &buf->status);

@@ -136,6 +136,10 @@ static int nvhdcp_i2c_read(struct tegra_nvhdcp *nvhdcp, u8 reg,
 	};
 
 	do {
+		if (!nvhdcp->hdmi->hpd_switch.state) {
+			nvhdcp_err("hdmi hpd disconnect\n");
+			return -EIO;
+		}
 		if (!nvhdcp_is_plugged(nvhdcp)) {
 			nvhdcp_err("disconnect during i2c xfer\n");
 			return -EIO;
@@ -748,6 +752,10 @@ static int verify_link(struct tegra_nvhdcp *nvhdcp, bool wait_ri)
 	tx = 0;
 	/* retry 3 times to deal with I2C link issues */
 	do {
+		if (!hdmi->hpd_switch.state) {
+			nvhdcp_err("hdmi hpd disconnect\n");
+			return -EIO;
+		}
 		if (wait_ri)
 			old = get_transmitter_ri(hdmi);
 
@@ -1221,6 +1229,9 @@ static const struct file_operations nvhdcp_fops = {
 	.unlocked_ioctl = nvhdcp_dev_ioctl,
 	.open           = nvhdcp_dev_open,
 	.release        = nvhdcp_dev_release,
+#ifdef CONFIG_COMPAT
+	.compat_ioctl   = nvhdcp_dev_ioctl,
+#endif
 };
 
 /* we only support one AP right now, so should only call this once. */

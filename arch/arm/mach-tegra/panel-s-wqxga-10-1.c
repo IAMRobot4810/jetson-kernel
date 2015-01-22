@@ -1,7 +1,7 @@
 /*
  * arch/arm/mach-tegra/panel-s-wqxga-10-1.c
  *
- * Copyright (c) 2012-2013, NVIDIA CORPORATION. All rights reserved.
+ * Copyright (c) 2012-2014, NVIDIA CORPORATION. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify it
  * under the terms and conditions of the GNU General Public License,
@@ -372,13 +372,17 @@ static int dsi_s_wqxga_10_1_postpoweron(struct device *dev)
 		goto fail;
 	}
 
-	if (machine_is_macallan())
-		err = macallan_dsi_gpio_get();
-	else
-		err = dalmore_dsi_gpio_get();
+	err = tegra_panel_gpio_get_dt("s,wqxga-10-1", &panel_of);
 	if (err < 0) {
-		pr_err("dsi gpio request failed\n");
-		goto fail;
+		/* try to get gpios from board file */
+		if (machine_is_macallan())
+			err = macallan_dsi_gpio_get();
+		else
+			err = dalmore_dsi_gpio_get();
+		if (err < 0) {
+			pr_err("dsi gpio request failed\n");
+			goto fail;
+		}
 	}
 
 	if (vdd_ds_1v8) {
@@ -426,12 +430,17 @@ static int dsi_s_wqxga_10_1_postpoweron(struct device *dev)
 
 	msleep(20);
 #if DSI_PANEL_RESET
-	gpio_direction_output(dsi_s_wqxga_10_1_pdata.dsi_panel_rst_gpio, 1);
-	usleep_range(1000, 5000);
-	gpio_set_value(dsi_s_wqxga_10_1_pdata.dsi_panel_rst_gpio, 0);
-	usleep_range(1000, 5000);
-	gpio_set_value(dsi_s_wqxga_10_1_pdata.dsi_panel_rst_gpio, 1);
-	msleep(20);
+	err = tegra_panel_reset(&panel_of, 20);
+	if (err < 0) {
+		/* use platform data */
+		gpio_direction_output(
+			dsi_s_wqxga_10_1_pdata.dsi_panel_rst_gpio, 1);
+		usleep_range(1000, 5000);
+		gpio_set_value(dsi_s_wqxga_10_1_pdata.dsi_panel_rst_gpio, 0);
+		usleep_range(1000, 5000);
+		gpio_set_value(dsi_s_wqxga_10_1_pdata.dsi_panel_rst_gpio, 1);
+		msleep(20);
+	}
 #endif
 
 	return 0;
@@ -722,7 +731,6 @@ static struct platform_device __maybe_unused
 
 static struct platform_device __maybe_unused
 			*dsi_s_wqxga_10_1_bl_devices[] __initdata = {
-	&tegra_pwfm_device,
 	&dsi_s_wqxga_10_1_bl_device,
 };
 
@@ -773,17 +781,28 @@ dsi_s_wqxga_10_1_sd_settings_init(struct tegra_dc_sd_settings *settings)
 	settings->bl_device_name = "pwm-backlight";
 }
 
+#ifdef CONFIG_TEGRA_DC_CMU
 static void dsi_s_wqxga_10_1_cmu_init(struct tegra_dc_platform_data *pdata)
 {
 	pdata->cmu = &dsi_s_wqxga_10_1_cmu;
 }
+#endif
+
+struct tegra_panel_ops dsi_s_wqxga_10_1_ops = {
+	.enable = dsi_s_wqxga_10_1_enable,
+	.disable = dsi_s_wqxga_10_1_disable,
+	.postpoweron = dsi_s_wqxga_10_1_postpoweron,
+	.postsuspend = dsi_s_wqxga_10_1_postsuspend,
+};
 
 struct tegra_panel __initdata dsi_s_wqxga_10_1 = {
 	.init_sd_settings = dsi_s_wqxga_10_1_sd_settings_init,
 	.init_dc_out = dsi_s_wqxga_10_1_dc_out_init,
 	.init_fb_data = dsi_s_wqxga_10_1_fb_data_init,
 	.register_bl_dev = dsi_s_wqxga_10_1_register_bl_dev,
+#ifdef CONFIG_TEGRA_DC_CMU
 	.init_cmu_data = dsi_s_wqxga_10_1_cmu_init,
+#endif
 	.set_disp_device = dsi_s_wqxga_10_1_set_disp_device,
 };
 EXPORT_SYMBOL(dsi_s_wqxga_10_1);

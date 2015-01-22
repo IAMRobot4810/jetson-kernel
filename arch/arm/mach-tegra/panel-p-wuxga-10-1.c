@@ -1,7 +1,7 @@
 /*
  * arch/arm/mach-tegra/panel-p-wuxga-10-1.c
  *
- * Copyright (c) 2013, NVIDIA CORPORATION.  All rights reserved.
+ * Copyright (c) 2012-2014, NVIDIA CORPORATION.  All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify it
  * under the terms and conditions of the GNU General Public License,
@@ -26,8 +26,6 @@
 #include <linux/leds.h>
 #include <linux/ioport.h>
 #include <linux/export.h>
-
-#include <generated/mach-types.h>
 
 #include "board.h"
 #include "board-panel.h"
@@ -263,69 +261,11 @@ fail:
 	return err;
 }
 
-static int macallan_dsi_regulator_get(struct device *dev)
-{
-	int err = 0;
-
-	if (reg_requested)
-		return 0;
-	avdd_lcd_3v3 = regulator_get(dev, "avdd_lcd");
-	if (IS_ERR(avdd_lcd_3v3)) {
-		pr_err("avdd_lcd regulator get failed\n");
-		err = PTR_ERR(avdd_lcd_3v3);
-		avdd_lcd_3v3 = NULL;
-		goto fail;
-	}
-
-	vdd_lcd_bl_en = regulator_get(dev, "vdd_lcd_bl_en");
-	if (IS_ERR(vdd_lcd_bl_en)) {
-		pr_err("vdd_lcd_bl_en regulator get failed\n");
-		err = PTR_ERR(vdd_lcd_bl_en);
-		vdd_lcd_bl_en = NULL;
-		goto fail;
-	}
-	reg_requested = true;
-	return 0;
-fail:
-	return err;
-}
-
-static int macallan_dsi_gpio_get(void)
-{
-	int err = 0;
-
-	if (gpio_requested)
-		return 0;
-
-	err = gpio_request(dsi_p_wuxga_10_1_pdata.dsi_panel_rst_gpio,
-		"panel rst");
-	if (err < 0) {
-		pr_err("panel reset gpio request failed\n");
-		goto fail;
-	}
-
-	/* free pwm GPIO */
-	err = gpio_request(dsi_p_wuxga_10_1_pdata.dsi_panel_bl_pwm_gpio,
-		"panel pwm");
-	if (err < 0) {
-		pr_err("panel pwm gpio request failed\n");
-		goto fail;
-	}
-	gpio_free(dsi_p_wuxga_10_1_pdata.dsi_panel_bl_pwm_gpio);
-	gpio_requested = true;
-	return 0;
-fail:
-	return err;
-}
-
 static int dsi_p_wuxga_10_1_enable(struct device *dev)
 {
 	int err = 0;
 
-	if (machine_is_macallan())
-		err = macallan_dsi_regulator_get(dev);
-	else
-		err = dalmore_dsi_regulator_get(dev);
+	err = dalmore_dsi_regulator_get(dev);
 	if (err < 0) {
 		pr_err("dsi regulator get failed\n");
 		goto fail;
@@ -334,10 +274,7 @@ static int dsi_p_wuxga_10_1_enable(struct device *dev)
 	err = tegra_panel_gpio_get_dt("p,wuxga-10-1", &panel_of);
 	if (err < 0) {
 		/* try to request gpios from board file */
-		if (machine_is_macallan())
-			err = macallan_dsi_gpio_get();
-		else
-			err = dalmore_dsi_gpio_get();
+		err = dalmore_dsi_gpio_get();
 		if (err < 0) {
 			pr_err("dsi gpio request failed\n");
 			goto fail;
@@ -660,7 +597,6 @@ static struct platform_device __maybe_unused
 
 static struct platform_device __maybe_unused
 			*dsi_p_wuxga_10_1_bl_devices[] __initdata = {
-	&tegra_pwfm_device,
 	&dsi_p_wuxga_10_1_bl_device,
 };
 
@@ -678,9 +614,9 @@ static int  __init dsi_p_wuxga_10_1_register_bl_dev(void)
 }
 
 static void dsi_p_wuxga_10_1_set_disp_device(
-	struct platform_device *display_device)
+	struct platform_device *dalmore_display_device)
 {
-	disp_device = display_device;
+	disp_device = dalmore_display_device;
 }
 
 static void dsi_p_wuxga_10_1_dc_out_init(struct tegra_dc_out *dc)
@@ -710,10 +646,12 @@ dsi_p_wuxga_10_1_sd_settings_init(struct tegra_dc_sd_settings *settings)
 	settings->bl_device_name = "pwm-backlight";
 }
 
+#ifdef CONFIG_TEGRA_DC_CMU
 static void dsi_p_wuxga_10_1_cmu_init(struct tegra_dc_platform_data *pdata)
 {
 	pdata->cmu = &dsi_p_wuxga_10_1_cmu;
 }
+#endif
 
 struct tegra_panel_ops dsi_p_wuxga_10_1_ops = {
 	.enable = dsi_p_wuxga_10_1_enable,
@@ -726,7 +664,9 @@ struct tegra_panel __initdata dsi_p_wuxga_10_1 = {
 	.init_dc_out = dsi_p_wuxga_10_1_dc_out_init,
 	.init_fb_data = dsi_p_wuxga_10_1_fb_data_init,
 	.register_bl_dev = dsi_p_wuxga_10_1_register_bl_dev,
+#ifdef CONFIG_TEGRA_DC_CMU
 	.init_cmu_data = dsi_p_wuxga_10_1_cmu_init,
+#endif
 	.set_disp_device = dsi_p_wuxga_10_1_set_disp_device,
 };
 EXPORT_SYMBOL(dsi_p_wuxga_10_1);

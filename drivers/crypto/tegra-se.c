@@ -44,7 +44,7 @@
 #include <crypto/internal/hash.h>
 #include <crypto/sha.h>
 #include <linux/pm_runtime.h>
-#include <mach/pm_domains.h>
+#include <linux/tegra_pm_domains.h>
 
 #include "tegra-se.h"
 
@@ -1696,7 +1696,7 @@ int tegra_se_aes_cmac_final(struct ahash_request *req)
 	temp_buffer = cmac_ctx->buffer;
 	while (sg_miter_next(&miter) && total < req->nbytes) {
 		unsigned int len;
-		len = min(miter.length, req->nbytes - total);
+		len = min(miter.length, (size_t)(req->nbytes - total));
 		if ((req->nbytes - (total + len)) <= last_block_bytes) {
 			bytes_to_copy =
 				last_block_bytes -

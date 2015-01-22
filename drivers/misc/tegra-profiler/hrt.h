@@ -1,7 +1,7 @@
 /*
  * drivers/misc/tegra-profiler/hrt.h
  *
- * Copyright (c) 2013, NVIDIA CORPORATION.  All rights reserved.
+ * Copyright (c) 2014, NVIDIA CORPORATION.  All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify it
  * under the terms and conditions of the GNU General Public License,
@@ -17,16 +17,12 @@
 #ifndef __QUADD_HRT_H
 #define __QUADD_HRT_H
 
-#define QUADD_MAX_STACK_DEPTH		64
-
 #ifdef __KERNEL__
 
 #include <linux/hrtimer.h>
 #include <linux/limits.h>
 
 #include "backtrace.h"
-
-#define QUADD_USE_CORRECT_SAMPLE_TS	1
 
 struct quadd_thread_data {
 	pid_t pid;
@@ -36,17 +32,14 @@ struct quadd_thread_data {
 struct quadd_cpu_context {
 	struct hrtimer hrtimer;
 
-	struct quadd_callchain callchain_data;
+	struct quadd_callchain cc;
 	char mmap_filename[PATH_MAX];
 
 	struct quadd_thread_data active_thread;
 	atomic_t nr_active;
-
-#ifdef QUADD_USE_CORRECT_SAMPLE_TS
-	u64 prev_time;
-	u64 current_time;
-#endif
 };
+
+struct timecounter;
 
 struct quadd_hrt_ctx {
 	struct quadd_cpu_context * __percpu cpu_ctx;
@@ -63,15 +56,21 @@ struct quadd_hrt_ctx {
 
 	unsigned long vm_size_prev;
 	unsigned long rss_size_prev;
+
+	struct timecounter *tc;
+	int use_arch_timer;
+
+	unsigned int unw_method;
 };
 
-#define QUADD_HRT_MIN_FREQ	110
+#define QUADD_HRT_MIN_FREQ	100
 
 #define QUADD_U32_MAX (~(__u32)0)
 
 struct quadd_hrt_ctx;
 struct quadd_record_data;
 struct quadd_module_state;
+struct quadd_iovec;
 
 struct quadd_hrt_ctx *quadd_hrt_init(struct quadd_ctx *ctx);
 void quadd_hrt_deinit(void);
@@ -80,7 +79,7 @@ int quadd_hrt_start(void);
 void quadd_hrt_stop(void);
 
 void quadd_put_sample(struct quadd_record_data *data,
-		      char *extra_data, unsigned int extra_length);
+		      struct quadd_iovec *vec, int vec_count);
 
 void quadd_hrt_get_state(struct quadd_module_state *state);
 u64 quadd_get_time(void);

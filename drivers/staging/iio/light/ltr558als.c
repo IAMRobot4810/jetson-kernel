@@ -1,11 +1,15 @@
 /* Lite-On LTR-558ALS Linux Driver
  *
- * Copyright (c) 2012-2013, NVIDIA CORPORATION.  All rights reserved.
+ * Copyright (c) 2012-2014, NVIDIA CORPORATION.  All rights reserved.
  *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation; either version 2 of the License, or
- * (at your option) any later version.
+ * This program is free software; you can redistribute it and/or modify it
+ * under the terms and conditions of the GNU General Public License,
+ * version 2, as published by the Free Software Foundation.
+ *
+ * This program is distributed in the hope it will be useful, but WITHOUT
+ * ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or
+ * FITNESS FOR A PARTICULAR PURPOSE.  See the GNU General Public License for
+ * more details.
  */
 
 #include <linux/delay.h>
@@ -23,6 +27,7 @@
 #include <linux/slab.h>
 #include <linux/iio/iio.h>
 #include <linux/iio/sysfs.h>
+#include <linux/regulator/consumer.h>
 #include <asm/uaccess.h>
 
 #include "ltr558als.h"
@@ -30,10 +35,17 @@
 #define DRIVER_VERSION "1.0"
 #define DEVICE_NAME "ltr558"
 
+enum {
+	VDD = 0,
+	LED
+};
+
 struct ltr558_chip {
 	struct i2c_client	*client;
 	struct mutex	lock;
 	int		irq;
+
+	struct regulator	*supply[2];
 
 	bool	is_als_enable;
 	bool	als_enabled_before_suspend;
@@ -92,8 +104,24 @@ static int ltr558_ps_enable(struct i2c_client *client, int gainrange)
 			break;
 	}
 
-	error = ltr558_i2c_write_reg(client, LTR558_PS_CONTR, setgain);
-	mdelay(WAKEUP_DELAY);
+	/*
+	 * Per HW Suggestion, LED Current: 100mA, Duty Cycle: 100%, PMF: 30KHz
+	 * LED Pulse Count: 5, Measurement Repeat Rate: 200ms
+	 */
+	error = ltr558_i2c_write_reg(client, LTR558_PS_LED,
+			PS_LED_PMF_30KHZ | PS_LED_CUR_DUTY_100 |
+			PS_LED_CUR_LEVEL_100);
+	if (!error)
+		error = ltr558_i2c_write_reg(client, LTR558_PS_N_PULSES,
+				PS_N_PULSES_5);
+	if (!error)
+		error = ltr558_i2c_write_reg(client, LTR558_PS_MEAS_RATE,
+				PS_MEAS_RATE_200MS);
+	if (!error) {
+		error = ltr558_i2c_write_reg(client,
+					     LTR558_PS_CONTR, BIT(5) | setgain);
+		mdelay(WAKEUP_DELAY);
+	}
 	return error;
 }
 
@@ -117,6 +145,10 @@ static int ltr558_ps_read(struct i2c_client *client)
 		goto out;
 	}
 
+	/* PS should never saturate */
+	/* FIX ME: enable WARN_ON once sensor is calibrated */
+	/* WARN_ON(psval_hi & BIT(7)); */
+
 	psdata = ((psval_hi & 0x07) * 256) + psval_lo;
 out:
 	return psdata;
@@ -133,7 +165,7 @@ static int ltr558_als_enable(struct i2c_client *client, int gainrange)
 		error = ltr558_i2c_write_reg(client, LTR558_ALS_CONTR,
 				MODE_ALS_ON_Range2);
 
-	mdelay(WAKEUP_DELAY);
+	msleep(WAKEUP_DELAY);
 	return error;
 }
 
@@ -266,10 +298,31 @@ static ssize_t store_prox_enable(struct device *dev,
 	}
 
 	mutex_lock(&chip->lock);
-	if (lval == 1)
+	if (lval == 1) {
+		if (chip->supply[VDD]) {
+			err = regulator_enable(chip->supply[VDD]);
+			if (err)
+				dev_err(dev, "vdd regulator enable failed\n");
+		}
+		if (chip->supply[LED]) {
+			err = regulator_enable(chip->supply[LED]);
+			if (err)
+				dev_err(dev, "led regulator enable failed\n");
+		}
 		err = ltr558_ps_enable(client, PS_RANGE1);
-	else
+	} else {
 		err = ltr558_ps_disable(client);
+		if (chip->supply[VDD]) {
+			err = regulator_disable(chip->supply[VDD]);
+			if (err)
+				dev_err(dev, "vdd regulator disable failed\n");
+		}
+		if (chip->supply[LED]) {
+			err = regulator_disable(chip->supply[LED]);
+			if (err)
+				dev_err(dev, "led regulator disable failed\n");
+		}
+	}
 
 	if (err < 0)
 		dev_err(dev, "Error in enabling proximity\n");
@@ -608,9 +661,7 @@ static ssize_t show_als_data(struct device *dev,
 static ssize_t show_name(struct device *dev,
 	struct device_attribute *attr, char *buf)
 {
-	struct iio_dev *indio_dev = dev_to_iio_dev(dev);
-	struct ltr558_chip *chip = iio_priv(indio_dev);
-	return sprintf(buf, "%s\n", chip->client->name);
+	return sprintf(buf, "%s\n", DEVICE_NAME);
 }
 
 static IIO_DEVICE_ATTR(proximity_low_threshold, S_IRUGO | S_IWUSR,
@@ -664,7 +715,7 @@ static int ltr558_chip_init(struct i2c_client *client)
 	struct ltr558_chip *chip = iio_priv(indio_dev);
 	int error = 0;
 
-	mdelay(PON_DELAY);
+	msleep(PON_DELAY);
 
 	chip->is_prox_enable  = 0;
 	chip->prox_low_thres = 0;
@@ -772,6 +823,48 @@ static int ltr558_probe(struct i2c_client *client,
 		goto exit_irq;
 	}
 
+	chip->supply[VDD] = regulator_get(&client->dev, "vdd");
+
+	if (IS_ERR(chip->supply[VDD])) {
+		dev_err(&client->dev, "could not get vdd regulator\n");
+		ret = PTR_ERR(chip->supply[VDD]);
+		goto exit_irq;
+	}
+
+	chip->supply[LED] = regulator_get(&client->dev, "vled");
+
+	if (IS_ERR(chip->supply[LED])) {
+		dev_err(&client->dev, "could not get vled regulator\n");
+		ret = PTR_ERR(chip->supply[LED]);
+		goto exit_irq;
+	}
+
+	ret = regulator_enable(chip->supply[VDD]);
+	if (ret) {
+		dev_err(&client->dev,
+			"func:%s regulator enable failed\n", __func__);
+		goto exit_irq;
+	}
+
+	ret = i2c_smbus_read_byte_data(client, LTR558_MANUFACTURER_ID);
+	if (ret < 0) {
+		dev_err(&client->dev, "Err in reading register %d, error %d\n",
+				LTR558_MANUFACTURER_ID, ret);
+		goto exit_irq;
+	}
+
+	if (ret != LTR_MANUFACTURER_ID) {
+		dev_err(&client->dev, "sensor not found\n");
+		goto exit_irq;
+	}
+
+	ret = regulator_disable(chip->supply[VDD]);
+	if (ret) {
+		dev_err(&client->dev,
+			"func:%s regulator disable failed\n", __func__);
+		goto exit_irq;
+	}
+
 	dev_dbg(&client->dev, "%s() success\n", __func__);
 	return 0;
 
@@ -799,53 +892,18 @@ static int ltr558_remove(struct i2c_client *client)
 	return 0;
 }
 
-
-static int ltr558_suspend(struct i2c_client *client, pm_message_t mesg)
-{
-	struct iio_dev *indio_dev = i2c_get_clientdata(client);
-	struct ltr558_chip *chip = iio_priv(indio_dev);
-	int ret;
-
-	if (chip->is_als_enable == 1)
-		chip->als_enabled_before_suspend = 1;
-	if (chip->is_prox_enable == 1)
-		chip->prox_enabled_before_suspend = 1;
-
-	ret = ltr558_ps_disable(client);
-	if (ret == 0)
-		ret = ltr558_als_disable(client);
-
-	return ret;
-}
-
-
-static int ltr558_resume(struct i2c_client *client)
-{
-	struct iio_dev *indio_dev = i2c_get_clientdata(client);
-	struct ltr558_chip *chip = iio_priv(indio_dev);
-	int error = 0;
-
-	mdelay(PON_DELAY);
-
-	if (chip->prox_enabled_before_suspend == 1) {
-		error = ltr558_ps_enable(client, chip->ps_gainrange);
-		if (error < 0)
-			goto out;
-	}
-
-	if (chip->als_enabled_before_suspend == 1) {
-		error = ltr558_als_enable(client, chip->als_gainrange);
-	}
-out:
-	return error;
-}
-
-
 static const struct i2c_device_id ltr558_id[] = {
 	{ DEVICE_NAME, 0 },
 	{}
 };
+MODULE_DEVICE_TABLE(i2c, ltr558_id);
 
+static const struct of_device_id ltr558_of_match[] = {
+	{ .compatible = "lite-on,ltr558", },
+	{ .compatible = "lite-on,ltr659", },
+	{ },
+};
+MODULE_DEVICE_TABLE(of, ltr558_of_match);
 
 static struct i2c_driver ltr558_driver = {
 	.class	= I2C_CLASS_HWMON,
@@ -855,9 +913,8 @@ static struct i2c_driver ltr558_driver = {
 	.driver = {
 		.owner = THIS_MODULE,
 		.name = DEVICE_NAME,
+		.of_match_table = of_match_ptr(ltr558_of_match),
 	},
-	.suspend = ltr558_suspend,
-	.resume = ltr558_resume,
 };
 
 

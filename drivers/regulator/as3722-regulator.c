@@ -85,7 +85,7 @@ struct as3722_register_mapping {
 struct as3722_regulator_config_data {
 	struct regulator_init_data *reg_init;
 	bool enable_tracking;
-	bool disable_tracking_suspend;
+	bool volatile_vsel;
 	int ext_control;
 };
 
@@ -330,7 +330,8 @@ static const struct as3722_register_mapping as3722_reg_lookup[] = {
 
 
 static const int as3722_ldo_current[] = { 150000, 300000 };
-static const int as3722_sd016_current[] = { 2500000, 3000000, 3500000 };
+static const int as3722_sd016_current[] = { 2500000, 3000000, 3500000,
+						4000000 };
 
 static int as3722_current_to_index(int min_uA, int max_uA,
 		const int *curr_table, int n_currents)
@@ -560,8 +561,6 @@ static int as3722_sd016_get_current_limit(struct regulator_dev *rdev)
 	}
 	val &= mask;
 	val >>= ffs(mask) - 1;
-	if (val == 3)
-		return -EINVAL;
 	return as3722_sd016_current[val];
 }
 
@@ -744,6 +743,9 @@ static int as3722_get_regulator_dt_data(struct platform_device *pdev,
 		}
 		reg_config->enable_tracking =
 			of_property_read_bool(reg_node, "ams,enable-tracking");
+		reg_config->volatile_vsel =
+			of_property_read_bool(reg_node, "ams,volatile-vsel");
+
 	}
 	return 0;
 }
@@ -769,8 +771,7 @@ static int as3722_get_regulator_platform_data(struct platform_device *pdev,
 		reg_config->reg_init = rpdata->reg_init;
 		reg_config->ext_control = rpdata->ext_control;
 		reg_config->enable_tracking = rpdata->enable_tracking;
-		reg_config->disable_tracking_suspend =
-					rpdata->disable_tracking_suspend;
+		reg_config->volatile_vsel = rpdata->volatile_vsel;
 	}
 	return 0;
 }
@@ -832,7 +833,7 @@ static int as3722_regulator_probe(struct platform_device *pdev)
 			as3722_regs->desc[id].min_uV = 825000;
 			as3722_regs->desc[id].uV_step = 25000;
 			as3722_regs->desc[id].linear_min_sel = 1;
-			as3722_regs->desc[id].enable_time = 500;
+			as3722_regs->desc[id].enable_time = 150;
 			break;
 		case AS3722_REGULATOR_ID_LDO3:
 			if (reg_config->ext_control)
@@ -842,7 +843,7 @@ static int as3722_regulator_probe(struct platform_device *pdev)
 			as3722_regs->desc[id].min_uV = 620000;
 			as3722_regs->desc[id].uV_step = 20000;
 			as3722_regs->desc[id].linear_min_sel = 1;
-			as3722_regs->desc[id].enable_time = 500;
+			as3722_regs->desc[id].enable_time = 350;
 			if (reg_config->enable_tracking) {
 				ret = as3722_ldo3_set_tracking_mode(as3722_regs,
 					id, AS3722_LDO3_MODE_PMOS_TRACKING);
@@ -861,20 +862,16 @@ static int as3722_regulator_probe(struct platform_device *pdev)
 				ops = &as3722_sd016_extcntrl_ops;
 			else
 				ops = &as3722_sd016_ops;
-			if (id == AS3722_REGULATOR_ID_SD0) {
-				/* AMS version revision id is wrong in silicon
-				 * and therefore this woraround to decide based
-				 * on boardID
-				 */
-				if (as3722_device_rev(as3722, 1, 2))
-					as3722_regs->desc[id].min_uV = 410000;
-				else
-					as3722_regs->desc[id].min_uV = 610000;
-			} else
-				as3722_regs->desc[id].min_uV = 610000;
+			as3722_regs->desc[id].min_uV = 610000;
+			/* AS3722 1V2/later for SD0 has mini_uV 410000 */
+			if ((id == AS3722_REGULATOR_ID_SD0) &&
+				as3722_device_rev_eq_later(as3722, 1, 2))
+				as3722_regs->desc[id].min_uV = 410000;
+
 			as3722_regs->desc[id].uV_step = 10000;
 			as3722_regs->desc[id].linear_min_sel = 1;
 			as3722_regs->desc[id].enable_time = 275;
+			as3722_regs->desc[id].vsel_persist = true;
 			break;
 		case AS3722_REGULATOR_ID_SD2:
 		case AS3722_REGULATOR_ID_SD3:
@@ -888,6 +885,8 @@ static int as3722_regulator_probe(struct platform_device *pdev)
 						as3722_sd2345_ranges;
 			as3722_regs->desc[id].n_linear_ranges =
 					ARRAY_SIZE(as3722_sd2345_ranges);
+			as3722_regs->desc[id].vsel_persist = true;
+			as3722_regs->desc[id].enable_time = 275;
 			break;
 		default:
 			if (reg_config->ext_control)
@@ -897,7 +896,7 @@ static int as3722_regulator_probe(struct platform_device *pdev)
 			as3722_regs->desc[id].min_uV = 825000;
 			as3722_regs->desc[id].uV_step = 25000;
 			as3722_regs->desc[id].linear_min_sel = 1;
-			as3722_regs->desc[id].enable_time = 500;
+			as3722_regs->desc[id].enable_time = 150;
 			as3722_regs->desc[id].linear_ranges = as3722_ldo_ranges;
 			as3722_regs->desc[id].n_linear_ranges =
 						ARRAY_SIZE(as3722_ldo_ranges);
@@ -906,6 +905,11 @@ static int as3722_regulator_probe(struct platform_device *pdev)
 		as3722_regs->desc[id].ops = ops;
 		config.init_data = reg_config->reg_init;
 		config.of_node = as3722_regulator_matches[id].of_node;
+
+		if (reg_config->volatile_vsel) {
+			unsigned int bit = as3722_reg_lookup[id].vsel_reg;
+			__set_bit(bit, as3722->volatile_vsel_registers);
+		}
 		rdev = devm_regulator_register(&pdev->dev,
 					&as3722_regs->desc[id], &config);
 		if (IS_ERR(rdev)) {
@@ -936,75 +940,7 @@ static int as3722_regulator_probe(struct platform_device *pdev)
 	return 0;
 }
 
-#ifdef CONFIG_PM_SLEEP
-static int as3722_regulator_suspend(struct device *dev)
-{
-	struct as3722_regulators *as3722_regs = dev_get_drvdata(dev);
-	struct as3722_regulator_config_data *reg_config;
-	int ret;
-	u32 val;
-
-	/* Enable SD1 external control before entering suspend */
-	reg_config = &as3722_regs->reg_config_data[AS3722_REGULATOR_ID_SD1];
-	val =  AS3722_EXT_CONTROL_ENABLE1 << (ffs(
-		as3722_reg_lookup[AS3722_REGULATOR_ID_SD1].
-		sleep_ctrl_mask) - 1);
-
-	ret = as3722_update_bits(as3722_regs->as3722, AS3722_ENABLE_CTRL1_REG,
-			AS3722_SD1_EXT_ENABLE_MASK,
-			val);
-	if (ret < 0) {
-		dev_err(dev, "Reg 0x%02x write failed: %d\n",
-				AS3722_ENABLE_CTRL1_REG, ret);
-		return ret;
-	}
-	reg_config = &as3722_regs->reg_config_data[AS3722_REGULATOR_ID_LDO3];
-	if (reg_config->enable_tracking &&
-		reg_config->disable_tracking_suspend) {
-		ret = as3722_ldo3_set_tracking_mode(as3722_regs,
-			AS3722_REGULATOR_ID_LDO3, AS3722_LDO3_MODE_NMOS);
-		if (ret < 0) {
-			dev_err(dev, "LDO3 tracking failed: %d\n", ret);
-			return ret;
-		}
-	}
-	return 0;
-}
-
-static int as3722_regulator_resume(struct device *dev)
-{
-	struct as3722_regulators *as3722_regs = dev_get_drvdata(dev);
-	struct as3722_regulator_config_data *reg_config;
-	int ret;
-	u32 val;
-
-	/* Disable SD1 external control after resuming to have a
-	 * proper shutdown sequence
-	 */
-	ret = as3722_update_bits(as3722_regs->as3722, AS3722_ENABLE_CTRL1_REG,
-			AS3722_SD1_EXT_ENABLE_MASK, 0);
-	if (ret < 0) {
-		dev_err(dev, "Reg 0x%02x write failed: %d\n",
-				AS3722_ENABLE_CTRL1_REG, ret);
-		return ret;
-	}
-	reg_config = &as3722_regs->reg_config_data[AS3722_REGULATOR_ID_LDO3];
-	if (reg_config->enable_tracking &&
-		reg_config->disable_tracking_suspend) {
-		ret = as3722_ldo3_set_tracking_mode(as3722_regs,
-			AS3722_REGULATOR_ID_LDO3, AS3722_LDO3_MODE_NMOS);
-		if (ret < 0) {
-			dev_err(dev, "LDO3 tracking failed: %d\n", ret);
-			return ret;
-		}
-	}
-	return 0;
-}
-#endif
-
 static const struct dev_pm_ops as3722_pm_ops = {
-	SET_SYSTEM_SLEEP_PM_OPS(as3722_regulator_suspend,
-	as3722_regulator_resume)
 };
 
 static const struct of_device_id of_as3722_regulator_match[] = {

@@ -1,7 +1,7 @@
 /*
  * arch/arm/mach-tegra/tegra11_soctherm.h
  *
- * Copyright (c) 2011-2013, NVIDIA CORPORATION. All rights reserved.
+ * Copyright (c) 2011-2014, NVIDIA CORPORATION. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify it
  * under the terms and conditions of the GNU General Public License,
@@ -68,16 +68,20 @@ enum soctherem_oc_irq_id {
 	TEGRA_SOC_OC_IRQ_MAX,
 };
 
+enum soctherm_polarity_id {
+	SOCTHERM_ACTIVE_HIGH = 0,
+	SOCTHERM_ACTIVE_LOW = 1,
+};
+
 struct soctherm_sensor {
 	bool sensor_enable;
-	bool zone_enable;
 	int tall;
 	int tiddq;
 	int ten_count;
 	int tsample;
-	int tsamp_ATE;
+	int tsamp_ate;
 	u8 pdiv;
-	u8 pdiv_ATE;
+	u8 pdiv_ate;
 };
 
 struct soctherm_therm {
@@ -112,6 +116,8 @@ struct soctherm_throttle {
 	u8 polarity;
 	u8 priority;
 	u8 period;
+	u32 alarm_cnt_threshold;
+	u32 alarm_filter;
 	bool intr;
 	struct soctherm_throttle_dev devs[THROTTLE_DEV_SIZE];
 };
@@ -127,6 +133,33 @@ struct soctherm_tsensor_pmu_data {
 	u8 pmu_i2c_addr;
 };
 
+struct soctherm_fuse_correction_war {
+	/* both scaled *1000000 */
+	int a;
+	int b;
+};
+
+/**
+ * struct soctherm_platform_data - Board specific SOC_THERM info.
+ * @oc_irq_base:		Base over-current IRQ number
+ * @num_oc_irqs:		Number of over-current IRQs
+ * @soctherm_clk_rate:		Clock rate for the SOC_THERM IP block.
+ * @tsensor_clk_rate:		Clock rate for the thermal sensors.
+ * @sensor_data:		An array containing the data of each sensor
+ *				See struct soctherm_sensor.
+ * @therm:			An array contanining the board specific
+ *				thermal zones and their respective settings,
+ *				such as trip points.
+ *				See struct soctherm_therm.
+ * @throttle:			static specification for hardware throttle
+ *				responses.
+ *				See struct soctherm_throttle.
+ * @tshut_pmu_trip_data:	PMU-specific thermal shutdown settings.
+ *				See struct tegra_thermtrip_pmic_data.
+ *
+ * therm is used for trip point configuration and should be moved out of
+ * soctherm_platform_data.
+ */
 struct soctherm_platform_data {
 	int oc_irq_base;
 	int num_oc_irqs;
@@ -136,18 +169,21 @@ struct soctherm_platform_data {
 	struct soctherm_sensor sensor_data[TSENSE_SIZE];
 	struct soctherm_therm therm[THERM_SIZE];
 	struct soctherm_throttle throttle[THROTTLE_SIZE];
-	struct tegra_tsensor_pmu_data *tshut_pmu_trip_data;
+	struct tegra_thermtrip_pmic_data *tshut_pmu_trip_data;
 };
 
 #ifdef CONFIG_TEGRA_SOCTHERM
 int __init tegra11_soctherm_init(struct soctherm_platform_data *data);
 void tegra_soctherm_adjust_cpu_zone(bool high_voltage_range);
+void tegra_soctherm_adjust_core_zone(bool high_voltage_range);
 #else
 static inline int tegra11_soctherm_init(struct soctherm_platform_data *data)
 {
 	return 0;
 }
 static inline void tegra_soctherm_adjust_cpu_zone(bool high_voltage_range)
+{ }
+static inline void tegra_soctherm_adjust_core_zone(bool high_voltage_range)
 { }
 #endif
 

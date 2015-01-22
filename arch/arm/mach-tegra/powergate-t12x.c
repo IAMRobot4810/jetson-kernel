@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2014, NVIDIA CORPORATION.  All rights reserved.
+ * Copyright (c) 2013-2014, NVIDIA CORPORATION.  All rights reserved.
  *
  * This software is licensed under the terms of the GNU General Public
  * License version 2, as published by the Free Software Foundation, and
@@ -291,6 +291,7 @@ static struct powergate_partition_info tegra12x_powergate_partition_info[] = {
 #define PMC_GPU_RG_CNTRL_0		0x2d4
 
 static DEFINE_SPINLOCK(tegra12x_powergate_lock);
+static DEFINE_MUTEX(tegra12x_powergate_disp_lock);
 
 static struct dvfs_rail *gpu_rail;
 
@@ -393,6 +394,7 @@ int tegra12x_powergate_mc_flush_done(int id)
 		rst_ctrl = mc_read(rst_ctrl_reg);
 		rst_ctrl &= ~(1 << mcClientBit);
 		mc_write(rst_ctrl, rst_ctrl_reg);
+		mc_read(rst_ctrl_reg);
 
 		spin_unlock_irqrestore(&tegra12x_powergate_lock, flags);
 	}
@@ -416,6 +418,7 @@ static int tegra12x_gpu_powergate(int id, struct powergate_partition_info *pg_in
 
 	/* enable clamp */
 	pmc_write(0x1, PMC_GPU_RG_CNTRL_0);
+	pmc_read(PMC_GPU_RG_CNTRL_0);
 
 	udelay(10);
 
@@ -503,6 +506,7 @@ static int tegra12x_gpu_unpowergate(int id,
 
 	/* disable clamp */
 	pmc_write(0, PMC_GPU_RG_CNTRL_0);
+	pmc_read(PMC_GPU_RG_CNTRL_0);
 
 	udelay(10);
 
@@ -526,6 +530,7 @@ err_power:
 static atomic_t ref_count_dispa = ATOMIC_INIT(0);
 static atomic_t ref_count_dispb = ATOMIC_INIT(0);
 static atomic_t ref_count_venc = ATOMIC_INIT(0);
+static atomic_t ref_count_pcie = ATOMIC_INIT(0);
 
 #define CHECK_RET(x)			\
 	do {				\
@@ -554,61 +559,81 @@ static inline int tegra12x_unpowergate(int id)
 static int tegra12x_disp_powergate(int id)
 {
 	int ret = 0;
-	int ref_counta = atomic_read(&ref_count_dispa);
-	int ref_countb = atomic_read(&ref_count_dispb);
-	int ref_countve = atomic_read(&ref_count_venc);
+	int ref_counta = 0;
+	int ref_countb = 0;
+
+	mutex_lock(&tegra12x_powergate_disp_lock);
+
+	ref_counta = atomic_read(&ref_count_dispa);
+	ref_countb = atomic_read(&ref_count_dispb);
 
 	if (id == TEGRA_POWERGATE_DISA) {
-		ref_counta = atomic_dec_return(&ref_count_dispa);
-		WARN_ONCE(ref_counta < 0, "DISPA ref count underflow");
+		if (ref_counta > 0)
+			ref_counta = atomic_dec_return(&ref_count_dispa);
+		if ((ref_counta <= 0) &&
+			tegra12x_powergate(TEGRA_POWERGATE_DISA)) {
+			ret = -EBUSY;
+			goto error_out;
+		}
 	} else if (id == TEGRA_POWERGATE_DISB) {
 		if (ref_countb > 0)
 			ref_countb = atomic_dec_return(&ref_count_dispb);
-		if (ref_countb <= 0)
-			CHECK_RET(tegra12x_powergate(TEGRA_POWERGATE_DISB));
+		if ((ref_countb <= 0) &&
+			tegra12x_powergate(TEGRA_POWERGATE_DISB)) {
+			ret = -EBUSY;
+			goto error_out;
+		}
 	}
 
-	if ((ref_counta <= 0) && (ref_countb <= 0) && (ref_countve <= 0)) {
-		CHECK_RET(tegra12x_powergate(TEGRA_POWERGATE_SOR));
-		CHECK_RET(tegra12x_powergate(TEGRA_POWERGATE_DISA));
+	if ((ref_counta <= 0) && (ref_countb <= 0)) {
+		if (tegra12x_powergate(TEGRA_POWERGATE_SOR)) {
+			ret = -EBUSY;
+			goto error_out;
+		}
 	}
+
+error_out:
+	mutex_unlock(&tegra12x_powergate_disp_lock);
 	return ret;
 }
 
 static int tegra12x_disp_unpowergate(int id)
 {
-	int ret;
+	int ret = 0;
 
-	/* always unpowergate dispA and SOR partition */
-	CHECK_RET(tegra12x_unpowergate(TEGRA_POWERGATE_DISA));
-	CHECK_RET(tegra12x_unpowergate(TEGRA_POWERGATE_SOR));
+	mutex_lock(&tegra12x_powergate_disp_lock);
+	/* always unpowergate SOR partition */
+	if (tegra12x_unpowergate(TEGRA_POWERGATE_SOR)) {
+		ret = -EBUSY;
+		goto error_out;
+	}
 
 	if (id == TEGRA_POWERGATE_DISA)
 		atomic_inc(&ref_count_dispa);
-	else if (id == TEGRA_POWERGATE_DISB) {
+	else if (id == TEGRA_POWERGATE_DISB)
 		atomic_inc(&ref_count_dispb);
-		ret = tegra12x_unpowergate(TEGRA_POWERGATE_DISB);
-	}
+	ret = tegra12x_unpowergate(id);
 
+error_out:
+	mutex_unlock(&tegra12x_powergate_disp_lock);
 	return ret;
 }
 
 static int tegra12x_venc_powergate(int id)
 {
 	int ret = 0;
-	int ref_count = atomic_read(&ref_count_venc);
+	int ref_count = 0;
 
 	if (!TEGRA_IS_VENC_POWERGATE_ID(id))
 		return -EINVAL;
 
 	ref_count = atomic_dec_return(&ref_count_venc);
+	WARN_ON(ref_count < 0);
 
-	if (ref_count > 0)
-		return ret;
-
-	if (ref_count <= 0) {
+	/* only powergate when decrementing ref_count from 1 to 0 */
+	if (ref_count == 0) {
 		CHECK_RET(tegra12x_powergate(id));
-		CHECK_RET(tegra12x_disp_powergate(id));
+		CHECK_RET(tegra12x_disp_powergate(TEGRA_POWERGATE_DISA));
 	}
 
 	return ret;
@@ -617,14 +642,88 @@ static int tegra12x_venc_powergate(int id)
 static int tegra12x_venc_unpowergate(int id)
 {
 	int ret = 0;
+	int ref_count = 0;
 
 	if (!TEGRA_IS_VENC_POWERGATE_ID(id))
 		return -EINVAL;
 
-	CHECK_RET(tegra12x_disp_unpowergate(id));
+	ref_count = atomic_inc_return(&ref_count_venc);
+	WARN_ON(ref_count < 1);
 
-	atomic_inc(&ref_count_venc);
+	/* only unpowergate when incrementing ref_count from 0 to 1 */
+	if (ref_count == 1) {
+		CHECK_RET(tegra12x_disp_unpowergate(TEGRA_POWERGATE_DISA));
+		CHECK_RET(tegra12x_unpowergate(id));
+	}
+
+	return ret;
+}
+
+static int tegra12x_pcie_powergate(int id)
+{
+	int ret = 0;
+	int ref_count = 0;
+
+	if (!TEGRA_IS_PCIE_POWERGATE_ID(id))
+		return -EINVAL;
+
+	ref_count = atomic_dec_return(&ref_count_pcie);
+	WARN_ON(ref_count < 0);
+
+	/* only powergate when decrementing ref_count from 1 to 0 */
+	if (ref_count == 0)
+		CHECK_RET(tegra12x_powergate(id));
+
+	return ret;
+}
+
+static int tegra12x_pcie_unpowergate(int id)
+{
+	int ret = 0;
+	int ref_count = 0;
+
+	if (!TEGRA_IS_PCIE_POWERGATE_ID(id))
+		return -EINVAL;
+
+	ref_count = atomic_inc_return(&ref_count_pcie);
+	WARN_ON(ref_count < 1);
+
+	/* only unpowergate when incrementing ref_count from 0 to 1 */
+	if (ref_count == 1)
+		CHECK_RET(tegra12x_unpowergate(id));
+
+	return ret;
+}
+
+/*
+ * Due to a HW bug 1320346 in t12x/t13x, PCIE needs to be unpowergated when
+ * XUSB is to be accessed.  Since PCIE uses reference counter, we can attempt
+ * to powergated/unpowergate PCIE when XUSB is powergated/unpowergated.  This
+ * will ensure that PCIE is unpowergated when (either XUSB or PCIE) needs it
+ * and will be powergated when (neither XUSB nor PCIE) needs it.
+ */
+static int tegra12x_xusbc_powergate(int id)
+{
+	int ret = 0;
+
+	if (!TEGRA_IS_XUSBC_POWERGATE_ID(id))
+		return -EINVAL;
+
+	CHECK_RET(tegra12x_powergate(id));
+	CHECK_RET(tegra12x_pcie_powergate(TEGRA_POWERGATE_PCIE));
+
+	return ret;
+}
+
+static int tegra12x_xusbc_unpowergate(int id)
+{
+	int ret = 0;
+
+	if (!TEGRA_IS_XUSBC_POWERGATE_ID(id))
+		return -EINVAL;
+
 	CHECK_RET(tegra12x_unpowergate(id));
+	CHECK_RET(tegra12x_pcie_unpowergate(TEGRA_POWERGATE_PCIE));
 
 	return ret;
 }
@@ -642,6 +741,10 @@ int tegra12x_powergate_partition(int id)
 		ret = tegra_powergate_set(id, false);
 	else if (id == TEGRA_POWERGATE_VENC)
 		ret = tegra12x_venc_powergate(id);
+	else if (id == TEGRA_POWERGATE_PCIE)
+		ret = tegra12x_pcie_powergate(id);
+	else if (id == TEGRA_POWERGATE_XUSBC)
+		ret = tegra12x_xusbc_powergate(id);
 	else {
 		/* call common power-gate API for t1xx */
 		ret = tegra1xx_powergate(id,
@@ -664,6 +767,10 @@ int tegra12x_unpowergate_partition(int id)
 		ret = tegra_powergate_set(id, true);
 	else if (id == TEGRA_POWERGATE_VENC)
 		ret = tegra12x_venc_unpowergate(id);
+	else if (id == TEGRA_POWERGATE_PCIE)
+		ret = tegra12x_pcie_unpowergate(id);
+	else if (id == TEGRA_POWERGATE_XUSBC)
+		ret = tegra12x_xusbc_unpowergate(id);
 	else {
 		ret = tegra1xx_unpowergate(id,
 			&tegra12x_powergate_partition_info[id]);
@@ -725,6 +832,59 @@ bool tegra12x_powergate_is_powered(int id)
 	return status;
 }
 
+static int tegra12x_powergate_init_refcount(void)
+{
+	bool disa_powered = tegra_powergate_is_powered(TEGRA_POWERGATE_DISA);
+	bool venc_powered = tegra_powergate_is_powered(TEGRA_POWERGATE_VENC);
+	bool pcie_powered = tegra_powergate_is_powered(TEGRA_POWERGATE_PCIE);
+
+	WARN_ON(venc_powered && !disa_powered);
+
+	/* if it wasn't powered on, power it on */
+	if (!disa_powered) {
+		tegra12x_disp_unpowergate(TEGRA_POWERGATE_DISA);
+	} else { /* if it was, set the refcount to 1 */
+		atomic_set(&ref_count_dispa, 1);
+	}
+	/* either way you end up with disa powered on and the
+	 * refcount set to 1
+	 */
+
+	if (venc_powered) {
+		/* venc_unpowergate() take a ref_count on dispa to account for
+		 * the hardware dependency between the two. This needs to
+		 * happen here as well to match that behaviour.
+		 */
+		atomic_inc(&ref_count_dispa);
+		atomic_set(&ref_count_venc, 1);
+	} else {
+		atomic_set(&ref_count_venc, 0);
+	}
+
+	/* PCIE needs refcount menchanism due to HW Bug#1320346.  PCIE should be
+	 * powergated only when both XUSB and PCIE are not active.
+	 */
+
+	atomic_set(&ref_count_pcie, 0);
+
+#ifdef CONFIG_ARCH_TEGRA_HAS_PCIE
+	if (pcie_powered)
+		atomic_inc(&ref_count_pcie);
+	else {
+		tegra12x_unpowergate_partition(TEGRA_POWERGATE_PCIE);
+		pcie_powered = true;
+	}
+#endif
+
+#ifdef CONFIG_TEGRA_XUSB_PLATFORM
+	if (pcie_powered)
+		atomic_inc(&ref_count_pcie);
+	else
+		tegra12x_unpowergate_partition(TEGRA_POWERGATE_PCIE);
+#endif
+	return 0;
+}
+
 static struct powergate_ops tegra12x_powergate_ops = {
 	.soc_name = "tegra12x",
 
@@ -747,13 +907,11 @@ static struct powergate_ops tegra12x_powergate_ops = {
 
 	.powergate_skip = tegra12x_powergate_skip,
 
+	.powergate_init_refcount = tegra12x_powergate_init_refcount,
 	.powergate_is_powered = tegra12x_powergate_is_powered,
 };
 
 struct powergate_ops *tegra12x_powergate_init_chip_support(void)
 {
-	if (tegra_powergate_is_powered(TEGRA_POWERGATE_VENC))
-		atomic_set(&ref_count_venc, 1);
-
 	return &tegra12x_powergate_ops;
 }

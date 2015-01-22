@@ -4,7 +4,7 @@
  * Copyright (C) 2010 Google, Inc.
  * Author: Erik Gilling <konkers@android.com>
  *
- * Copyright (c) 2010-2012, NVIDIA CORPORATION, All rights reserved.
+ * Copyright (c) 2010-2014, NVIDIA CORPORATION, All rights reserved.
  *
  * This software is licensed under the terms of the GNU General Public
  * License version 2, as published by the Free Software Foundation, and
@@ -408,8 +408,14 @@
 #define DC_DISP_CURSOR_START_ADDR_NS		0x43f
 #define CURSOR_START_ADDR_MASK	(((1 << 22) - 1) << 10)
 #define CURSOR_START_ADDR(_addr)	((_addr) >> 10)
+#ifdef CONFIG_ARCH_DMA_ADDR_T_64BIT
 #define	CURSOR_START_ADDR_LOW(_addr) ((_addr & 0xffffffff) >> 10)
 #define	CURSOR_START_ADDR_HI(_addr) ((_addr >> 32) & 0x3)
+#else
+#define	CURSOR_START_ADDR_LOW(_addr) ((_addr & 0xffffffff) >> 10)
+#define	CURSOR_START_ADDR_HI(_addr) (0)
+#endif
+#define   CURSOR_SIZE_32		(0x0 << 24)
 #define   CURSOR_SIZE_64		(0x1 << 24)
 #define   CURSOR_SIZE_128		(0x2 << 24)
 #define   CURSOR_SIZE_256		(0x3 << 24)
@@ -435,10 +441,11 @@
 #define   UF_LINE_FLUSH                         (1 << 1)
 
 #define	DC_DISP_BLEND_CURSOR_CONTROL		0x4f1
-#define CURSOR_MODE_CAL(x) ((x) << 24)
-#define CURSOR_DST_BLEND_FACTOR_SELECT(x) ((x) << 16)
-#define CURSOR_SRC_BLEND_FACTOR_SELECT(x) ((x) << 8)
-#define CURSOR_ALPHA	0xff
+#define  WINH_CURS_SELECT(x)		(((x) & 0x1) << 28)
+#define  CURSOR_MODE_SELECT(x)		(((x) & 0x1) << 24)
+#define  CURSOR_DST_BLEND_FACTOR_SELECT(x) ((x) << 16)
+#define  CURSOR_SRC_BLEND_FACTOR_SELECT(x) ((x) << 8)
+#define  CURSOR_ALPHA(a)		((a) & 0xff)
 
 #define DC_WIN_COLOR_PALETTE(x)			(0x500 + (x))
 
@@ -459,7 +466,8 @@
 #endif
 
 #if defined(CONFIG_ARCH_TEGRA_12x_SOC)
-#define DC_DISP_CURSOR_START_ADDR_HI	0x4ec
+#define DC_DISP_CURSOR_START_ADDR_HI		0x4ec
+#define DC_DISP_CURSOR_START_ADDR_HI_NS		0x4ed
 #endif
 
 #define DC_WIN_PALETTE_COLOR_EXT		0x600
@@ -760,6 +768,7 @@
 #define  SD_ENABLE_ONESHOT		(2 << 0)
 #define  SD_USE_VID_LUMA		(1 << 2)
 #define  SD_BIN_WIDTH(x)		(((x) & 0x3) << 3)
+#define  SD_BIN_WIDTH_VAL(val)		(((val) & (0x3 << 3)) >> 3)
 #define  SD_BIN_WIDTH_ONE		(0 << 3)
 #define  SD_BIN_WIDTH_TWO		(1 << 3)
 #define  SD_BIN_WIDTH_FOUR		(2 << 3)
@@ -857,10 +866,14 @@
 #define  SD_AGG_PRI_LVL(x)		((x) >> 3)
 #define  SD_GET_AGG(x)			((x) & 0x7)
 
-#define DC_DISP_BLEND_CURSOR_CONTROL		0x4f1
-#define  WINH_CURS_SELECT(x)		(((x) & 0x1) << 28)
-#define  CURSOR_MODE_SELECT(x)		(((x) & 0x1) << 24)
-
 #define DC_DISP_BLEND_BACKGROUND_COLOR		0x4e4
+
+#define DC_DISP_DISPLAY_DBG_TIMING		0x4f6
+#define  DBG_H_BLANK			(1 << 31)
+#define  DBG_H_COUNT_SHIFT		(16)
+#define  DBG_H_COUNT_MASK		(0x7fff << DBG_H_COUNT_SHIFT)
+#define  DBG_V_BLANK			(1 << 15)
+#define  DBG_V_COUNT_SHIFT		(0)
+#define  DBG_V_COUNT_MASK		(0x7fff << DBG_V_COUNT_SHIFT)
 
 #endif

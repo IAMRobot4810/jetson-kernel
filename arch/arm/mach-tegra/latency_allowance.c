@@ -1,7 +1,7 @@
 /*
  * arch/arm/mach-tegra/latency_allowance.c
  *
- * Copyright (C) 2011-2013, NVIDIA CORPORATION. All rights reserved.
+ * Copyright (C) 2011-2014, NVIDIA CORPORATION. All rights reserved.
  *
  * This software is licensed under the terms of the GNU General Public
  * License version 2, as published by the Free Software Foundation, and
@@ -48,23 +48,6 @@ module_param_named(disable_disp_ptsa,
 module_param_named(disable_bbc_ptsa,
 	cs.disable_bbc_ptsa, bool, S_IRUGO | S_IWUSR);
 
-/* FIXME!!:- This function needs to be implemented properly. */
-unsigned int tegra_get_dvfs_time_nsec(unsigned long emc_freq_mhz)
-{
-	if ((emc_freq_mhz >= 100) && (emc_freq_mhz <= 120))
-		return 6679;
-	else if ((emc_freq_mhz >= 200) && (emc_freq_mhz <= 220))
-		return 3954;
-	else if ((emc_freq_mhz >= 400) && (emc_freq_mhz <= 420))
-		return 2396;
-	else if ((emc_freq_mhz >= 780) && (emc_freq_mhz <= 800))
-		return 1583;
-	else if ((emc_freq_mhz >= 920) && (emc_freq_mhz <= 940))
-		return 1452;
-	else
-		return 3000;
-}
-
 static void init_chip_specific(void)
 {
 	enum tegra_chipid cid;
@@ -79,23 +62,9 @@ static void init_chip_specific(void)
 	cid = tegra_get_chipid();
 
 	switch (cid) {
-#if defined(CONFIG_ARCH_TEGRA_3x_SOC)
-	case TEGRA_CHIPID_TEGRA3:
-		tegra_la_get_t3_specific(&cs);
-		break;
-#endif
-#if defined(CONFIG_ARCH_TEGRA_11x_SOC)
-	case TEGRA_CHIPID_TEGRA11:
-		tegra_la_get_t11x_specific(&cs);
-		break;
-#endif
-#if defined(CONFIG_ARCH_TEGRA_14x_SOC)
-	case TEGRA_CHIPID_TEGRA14:
-		tegra_la_get_t14x_specific(&cs);
-		break;
-#endif
 #if defined(CONFIG_ARCH_TEGRA_12x_SOC)
 	case TEGRA_CHIPID_TEGRA12:
+	case TEGRA_CHIPID_TEGRA13:
 		tegra_la_get_t12x_specific(&cs);
 		break;
 #endif
@@ -180,10 +149,11 @@ static int default_set_la(enum tegra_la_id id, unsigned int bw_mbps)
 }
 
 int tegra_set_disp_latency_allowance(enum tegra_la_id id,
+					unsigned long emc_freq_hz,
 					unsigned int bw_mbps,
 					struct dc_to_la_params disp_params) {
 	if (cs.set_disp_la)
-		return cs.set_disp_la(id, bw_mbps, disp_params);
+		return cs.set_disp_la(id, emc_freq_hz, bw_mbps, disp_params);
 	else if (cs.set_la)
 		return cs.set_la(id, bw_mbps);
 	return 0;
@@ -259,14 +229,6 @@ void tegra_latency_allowance_update_tick_length(unsigned int new_ns_per_tick)
 			cs.scaling_info[i].la_set = la;
 		}
 		spin_unlock(&cs.lock);
-
-#if defined(CONFIG_ARCH_TEGRA_3x_SOC)
-		/* Re-scale G2PR, G2SR, G2DR, G2DW with updated ns_per_tick */
-		tegra_set_latency_allowance(TEGRA_LA_G2PR, 20);
-		tegra_set_latency_allowance(TEGRA_LA_G2SR, 20);
-		tegra_set_latency_allowance(TEGRA_LA_G2DR, 20);
-		tegra_set_latency_allowance(TEGRA_LA_G2DW, 20);
-#endif
 	}
 }
 
@@ -408,12 +370,6 @@ static int __init tegra_latency_allowance_init(void)
 				la_to_set);
 		}
 	}
-#if defined(CONFIG_ARCH_TEGRA_3x_SOC)
-	tegra_set_latency_allowance(TEGRA_LA_G2PR, 20);
-	tegra_set_latency_allowance(TEGRA_LA_G2SR, 20);
-	tegra_set_latency_allowance(TEGRA_LA_G2DR, 20);
-	tegra_set_latency_allowance(TEGRA_LA_G2DW, 20);
-#endif
 
 	if (cs.init_ptsa)
 		cs.init_ptsa();

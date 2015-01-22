@@ -39,11 +39,26 @@
 #define BQ2419X_FAULT_REG		0x09
 #define BQ2419X_REVISION_REG		0x0a
 
-#define BQ24190_IC_VER			0x40
+#define BQ2419X_INPUT_VINDPM_MASK	0x78
+#define BQ2419X_INPUT_IINLIM_MASK	0x07
+
+#define BQ2419X_CHRG_CTRL_ICHG_MASK	0xFC
+
+#define BQ2419X_CHRG_TERM_PRECHG_MASK	0xF0
+#define BQ2419X_CHRG_TERM_TERM_MASK	0x0F
+
+#define BQ2419X_THERM_BAT_COMP_MASK	0xE0
+#define BQ2419X_THERM_VCLAMP_MASK	0x1C
+#define BQ2419X_THERM_TREG_MASK		0x03
+
+#define BQ2419X_TIME_JEITA_ISET		0x01
+
+#define BQ2419X_CHG_VOLT_LIMIT_MASK	0xFC
+
+#define BQ24190_IC_VER			0x20
 #define BQ24192_IC_VER			0x28
 #define BQ24192i_IC_VER			0x18
 
-#define BQ2419X_CHARGE_CURRENT_MASK	~(0x03)
 #define BQ2419X_ENABLE_CHARGE_MASK	0x30
 #define BQ2419X_ENABLE_VBUS		0x20
 #define BQ2419X_ENABLE_CHARGE		0x10
@@ -80,6 +95,7 @@
 #define BQ2419x_FAULT_CHRG_INPUT		0x10
 #define BQ2419x_FAULT_CHRG_THERMAL		0x20
 #define BQ2419x_FAULT_CHRG_SAFTY		0x30
+#define BQ2419x_FAULT_BAT_FAULT			BIT(3)
 
 #define BQ2419x_FAULT_NTC_FAULT			0x07
 #define BQ2419x_TREG				0x03
@@ -90,7 +106,6 @@
 #define BQ2419x_NVCHARGER_INPUT_VOL_SEL	0x40
 #define BQ2419x_DEFAULT_INPUT_VOL_SEL	0x30
 #define BQ2419x_VOLTAGE_CTRL_MASK	0xFC
-#define BQ2419x_DEFAULT_CHARGE_VOLTAGE	0xB2
 
 #define BQ2419x_CHARGING_CURRENT_STEP_DELAY_US	1000
 
@@ -113,17 +128,30 @@ struct bq2419x_vbus_platform_data {
  * struct bq2419x_charger_platform_data - bq2419x charger platform data.
  */
 struct bq2419x_charger_platform_data {
+	int input_voltage_limit_mV;
+	int fast_charge_current_limit_mA;
+	int pre_charge_current_limit_mA;
+	int termination_current_limit_mA;
+	int ir_compensation_resister_ohm;
+	int ir_compensation_voltage_mV;
+	int thermal_regulation_threshold_degC;
+	int charge_voltage_limit_mV;
 	int max_charge_current_mA;
-	int charging_term_current_mA;
 	int wdt_timeout;
 	int rtc_alarm_time;
 	int num_consumer_supplies;
 	struct regulator_consumer_supply *consumer_supplies;
 	int chg_restart_time;
+	int auto_recharge_time_power_off;
 	const char *tz_name; /* Thermal zone name */
 	bool disable_suspend_during_charging;
 	bool enable_thermal_monitor; /* TRUE if FuelGauge provides temp */
 	int temp_polling_time_sec;
+	int n_temp_profile;
+	u32 *temp_range;
+	u32 *chg_current_limit;
+	u32 *chg_thermal_voltage_limit;
+	u32 auto_recharge_time_supend;
 };
 
 /*

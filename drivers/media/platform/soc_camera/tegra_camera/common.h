@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2012-2013, NVIDIA CORPORATION.  All rights reserved.
+ * Copyright (c) 2012-2014, NVIDIA CORPORATION.  All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify it
  * under the terms and conditions of the GNU General Public License,
@@ -67,6 +67,8 @@ struct tegra_camera_ops {
 			     struct tegra_camera_buffer *buf);
 	int (*capture_stop)(struct tegra_camera_dev *vi2_cam, int port);
 
+	void (*init_syncpts)(struct tegra_camera_dev *vi2_cam);
+	void (*free_syncpts)(struct tegra_camera_dev *vi2_cam);
 	void (*incr_syncpts)(struct tegra_camera_dev *vi2_cam);
 	void (*save_syncpts)(struct tegra_camera_dev *vi2_cam);
 
@@ -100,6 +102,12 @@ struct tegra_camera_dev {
 	struct work_struct		work;
 	struct mutex			work_mutex;
 
+	/* syncpt ids */
+	u32				syncpt_id_csi_a;
+	u32				syncpt_id_csi_b;
+	u32				syncpt_id_vip;
+
+	/* syncpt values */
 	u32				syncpt_csi_a;
 	u32				syncpt_csi_b;
 	u32				syncpt_vip;
@@ -110,6 +118,8 @@ struct tegra_camera_dev {
 
 	/* Test Pattern Generator mode */
 	int				tpg_mode;
+
+	int				sof;
 };
 
 #define TC_VI_REG_RD(dev, offset) readl(dev->reg_base + offset)

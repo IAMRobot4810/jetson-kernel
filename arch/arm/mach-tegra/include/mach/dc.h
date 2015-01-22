@@ -100,6 +100,7 @@ enum {
 	TEGRA_DSI_LINK0,
 	TEGRA_DSI_LINK1,
 };
+
 struct tegra_dsi_cmd {
 	u8	cmd_type;
 	u8	data_id;
@@ -115,7 +116,11 @@ struct tegra_dsi_cmd {
 	} sp_len_dly;
 	u8	*pdata;
 	u8   link_id;
+	bool	club_cmd;
 };
+
+#define CMD_CLUBBED				true
+#define CMD_NOT_CLUBBED				false
 
 #define DSI_GENERIC_LONG_WRITE			0x29
 #define DSI_DCS_LONG_WRITE			0x39
@@ -135,20 +140,27 @@ struct tegra_dsi_cmd {
 #define DSI_NULL_PKT_NO_DATA			0x9
 #define DSI_BLANKING_PKT_NO_DATA		0x19
 
-#define _DSI_CMD_SHORT(di, p0, p1, lnk_id, _cmd_type)	{ \
+#define IS_DSI_SHORT_PKT(cmd)	((cmd.data_id == DSI_DCS_WRITE_0_PARAM) ||\
+			(cmd.data_id == DSI_DCS_WRITE_1_PARAM) ||\
+			(cmd.data_id == DSI_GENERIC_SHORT_WRITE_1_PARAMS) ||\
+			(cmd.data_id == DSI_GENERIC_SHORT_WRITE_2_PARAMS))
+
+#define _DSI_CMD_SHORT(di, p0, p1, lnk_id, _cmd_type, club)	{ \
 					.cmd_type = _cmd_type, \
 					.data_id = di, \
 					.sp_len_dly.sp.data0 = p0, \
 					.sp_len_dly.sp.data1 = p1, \
 					.link_id = lnk_id, \
+					.club_cmd = club,\
 					}
 
-#define DSI_CMD_VBLANK_SHORT(di, p0, p1) \
+#define DSI_CMD_VBLANK_SHORT(di, p0, p1, club) \
 			_DSI_CMD_SHORT(di, p0, p1, TEGRA_DSI_LINK0,\
-				TEGRA_DSI_PACKET_VIDEO_VBLANK_CMD)
+				TEGRA_DSI_PACKET_VIDEO_VBLANK_CMD, club)
 
 #define DSI_CMD_SHORT_LINK(di, p0, p1, lnk_id) \
-			_DSI_CMD_SHORT(di, p0, p1, lnk_id, TEGRA_DSI_PACKET_CMD)
+			_DSI_CMD_SHORT(di, p0, p1, lnk_id,\
+				TEGRA_DSI_PACKET_CMD, CMD_NOT_CLUBBED)
 
 #define DSI_CMD_SHORT(di, p0, p1)	\
 			DSI_CMD_SHORT_LINK(di, p0, p1, TEGRA_DSI_LINK0)
@@ -173,8 +185,8 @@ struct tegra_dsi_cmd {
 				}
 
 #define DSI_CMD_VBLANK_LONG(di, ptr)	\
-		_DSI_CMD_LONG(di, ptr, TEGRA_DSI_LINK0,\
-				TEGRA_DSI_PACKET_VIDEO_VBLANK_CMD)
+		_DSI_CMD_LONG(di, ptr, TEGRA_DSI_LINK0, \
+					TEGRA_DSI_PACKET_VIDEO_VBLANK_CMD)
 
 #define DSI_CMD_LONG_LINK(di, ptr, lnk_id)	\
 		_DSI_CMD_LONG(di, ptr, lnk_id, TEGRA_DSI_PACKET_CMD)
@@ -269,6 +281,12 @@ enum {
 #define DSI_HOST_SUSPEND_LV1		2
 #define DSI_HOST_SUSPEND_LV2		3
 
+struct tegra_dsi_board_info {
+	u32 platform_boardid;
+	u32 platform_boardversion;
+	u32 display_boardid;
+	u32 display_boardversion;
+};
 struct tegra_dsi_out {
 	u8		n_data_lanes;			/* required */
 	u8		pixel_format;			/* required */
@@ -280,8 +298,6 @@ struct tegra_dsi_out {
 	u16		dsi_panel_rst_gpio;
 	u16		dsi_panel_bl_en_gpio;
 	u16		dsi_panel_bl_pwm_gpio;
-	u16		chip_id;
-	u8		chip_rev;
 	u8		controller_vs;
 
 	bool		panel_has_frame_buffer;	/* required*/
@@ -339,6 +355,7 @@ struct tegra_dsi_out {
 
 	bool		lp00_pre_panel_wakeup;
 	bool		ulpm_not_supported;
+	struct tegra_dsi_board_info	boardinfo;
 };
 
 enum {
@@ -391,6 +408,7 @@ enum {
 	TEGRA_DC_OUT_DSI,
 	TEGRA_DC_OUT_DP,
 	TEGRA_DC_OUT_LVDS,
+	TEGRA_DC_OUT_NVSR_DP,
 };
 
 struct tegra_dc_out_pin {
@@ -520,6 +538,9 @@ enum {
 	TEGRA_PIN_OUT_CONFIG_SEL_LSPI_DE,
 };
 
+/* this is the old name. provided for compatibility with old board files. */
+#define dcc_bus ddc_bus
+
 struct tegra_dc_out {
 	int				type;
 	unsigned			flags;
@@ -528,7 +549,7 @@ struct tegra_dc_out {
 	unsigned			h_size;
 	unsigned			v_size;
 
-	int				dcc_bus;
+	int				ddc_bus;
 	int				hotplug_gpio;
 	int				hotplug_state; /* 0 normal 1 force on */
 	const char			*parent_clk;
@@ -596,6 +617,7 @@ struct tegra_dc_out {
 /* Errands use the interrupts */
 #define V_BLANK_FLIP		0
 #define V_BLANK_NVSD		1
+#define V_BLANK_USER		2
 
 #define V_PULSE2_FLIP		0
 #define V_PULSE2_NVSD		1
@@ -669,6 +691,7 @@ struct tegra_dc_win {
 	unsigned		z;
 
 	struct tegra_dc_csc	csc;
+	bool			csc_dirty;
 
 	int			dirty;
 	int			underflows;
@@ -773,8 +796,8 @@ struct tegra_dc_bw_data {
 };
 
 #define TEGRA_DC_FLAG_ENABLED		(1 << 0)
-#define TEGRA_DC_FLAG_CMU_DISABLE	(0 << 1)
-#define TEGRA_DC_FLAG_CMU_ENABLE	(1 << 1)
+
+struct drm_mode_modeinfo;
 
 int tegra_dc_get_stride(struct tegra_dc *dc, unsigned win);
 struct tegra_dc *tegra_dc_get_dc(unsigned idx);
@@ -783,9 +806,12 @@ bool tegra_dc_get_connected(struct tegra_dc *);
 bool tegra_dc_hpd(struct tegra_dc *dc);
 
 
-void tegra_dc_get_fbvblank(struct tegra_dc *dc, struct fb_vblank *vblank);
+bool tegra_dc_has_vsync(struct tegra_dc *dc);
+void tegra_dc_vsync_enable(struct tegra_dc *dc);
+void tegra_dc_vsync_disable(struct tegra_dc *dc);
 int tegra_dc_wait_for_vsync(struct tegra_dc *dc);
-void tegra_dc_blank(struct tegra_dc *dc);
+void tegra_dc_blank(struct tegra_dc *dc, unsigned windows);
+int tegra_dc_restore(struct tegra_dc *dc);
 
 void tegra_dc_enable(struct tegra_dc *dc);
 void tegra_dc_disable(struct tegra_dc *dc);
@@ -795,12 +821,16 @@ int tegra_dc_set_default_videomode(struct tegra_dc *dc);
 u32 tegra_dc_get_syncpt_id(const struct tegra_dc *dc, int i);
 u32 tegra_dc_incr_syncpt_max(struct tegra_dc *dc, int i);
 void tegra_dc_incr_syncpt_min(struct tegra_dc *dc, int i, u32 val);
+struct sync_fence *tegra_dc_create_fence(struct tegra_dc *dc, int i, u32 val);
 
 /* tegra_dc_update_windows and tegra_dc_sync_windows do not support windows
  * with differenct dcs in one call
+ * dirty_rect is u16[4]: xoff, yoff, width, height
  */
-int tegra_dc_update_windows(struct tegra_dc_win *windows[], int n);
+int tegra_dc_update_windows(struct tegra_dc_win *windows[], int n,
+	u16 *dirty_rect);
 int tegra_dc_sync_windows(struct tegra_dc_win *windows[], int n);
+void tegra_dc_disable_window(struct tegra_dc *dc, unsigned win);
 int tegra_dc_config_frame_end_intr(struct tegra_dc *dc, bool enable);
 bool tegra_dc_is_within_n_vsync(struct tegra_dc *dc, s64 ts);
 bool tegra_dc_does_vsync_separate(struct tegra_dc *dc, s64 new_ts, s64 old_ts);
@@ -809,6 +839,8 @@ int tegra_dc_set_mode(struct tegra_dc *dc, const struct tegra_dc_mode *mode);
 struct fb_videomode;
 int tegra_dc_to_fb_videomode(struct fb_videomode *fbmode,
 	const struct tegra_dc_mode *mode);
+int tegra_dc_set_drm_mode(struct tegra_dc *dc,
+	const struct drm_mode_modeinfo *dmode, bool stereo_mode);
 int tegra_dc_set_fb_mode(struct tegra_dc *dc, const struct fb_videomode *fbmode,
 	bool stereo_mode);
 
@@ -868,12 +900,15 @@ void tegra_get_fb2_resource(struct resource *fb2_res);
 
 /* table of electrical settings, must be in acending order. */
 struct tmds_config {
+	u32 version;	/* MAJOR, MINOR */
 	int pclk;
 	u32 pll0;
 	u32 pll1;
 	u32 pe_current; /* pre-emphasis */
 	u32 drive_current;
 	u32 peak_current; /* for TEGRA_11x_SOC */
+	u32 pad_ctls0_mask; /* register AND mask */
+	u32 pad_ctls0_setting; /* register OR mask */
 };
 
 struct tegra_hdmi_out {
@@ -881,12 +916,33 @@ struct tegra_hdmi_out {
 	int n_tmds_config;
 };
 
+enum {
+	DRIVE_CURRENT_L0 = 0,
+	DRIVE_CURRENT_L1 = 1,
+	DRIVE_CURRENT_L2 = 2,
+	DRIVE_CURRENT_L3 = 3,
+};
+
+enum {
+	PRE_EMPHASIS_L0 = 0,
+	PRE_EMPHASIS_L1 = 1,
+	PRE_EMPHASIS_L2 = 2,
+	PRE_EMPHASIS_L3 = 3,
+};
+
+enum {
+	POST_CURSOR2_L0 = 0,
+	POST_CURSOR2_L1 = 1,
+	POST_CURSOR2_L2 = 2,
+	POST_CURSOR2_L3 = 3,
+};
+
 struct tegra_dc_dp_lt_settings {
-	int drive_current;
-	int lane_preemphasis;
-	int post_cursor;
-	int tx_pu;
-	int load_adj;
+	u32 drive_current[4]; /* Entry for each lane */
+	u32 lane_preemphasis[4]; /* Entry for each lane */
+	u32 post_cursor[4]; /* Entry for each lane */
+	u32 tx_pu;
+	u32 load_adj;
 };
 
 struct tegra_dp_out {

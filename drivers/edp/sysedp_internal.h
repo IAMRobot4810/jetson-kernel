@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2012-2013, NVIDIA CORPORATION.  All rights reserved.
+ * Copyright (c) 2012-2014, NVIDIA CORPORATION.  All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify it
  * under the terms and conditions of the GNU General Public License,
@@ -24,10 +24,12 @@ extern struct mutex sysedp_lock;
 extern struct dentry *edp_debugfs_dir;
 extern struct dentry *sysedp_debugfs_dir;
 extern int margin;
+extern int min_budget;
 extern unsigned int avail_budget;
 extern unsigned int consumer_sum;
 extern struct list_head registered_consumers;
 extern struct mutex sysedp_lock;
+extern struct kobject sysedp_kobj;
 
 static inline unsigned int _cur_level(struct sysedp_consumer *c)
 {

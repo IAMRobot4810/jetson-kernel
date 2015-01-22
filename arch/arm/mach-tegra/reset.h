@@ -3,7 +3,7 @@
  *
  * CPU reset dispatcher.
  *
- * Copyright (c) 2011, NVIDIA Corporation.
+ * Copyright (c) 2011-2014, NVIDIA CORPORATION.  All rights reserved.
  *
  * This software is licensed under the terms of the GNU General Public
  * License version 2, as published by the Free Software Foundation, and
@@ -13,7 +13,6 @@
  * but WITHOUT ANY WARRANTY; without even the implied warranty of
  * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
  * GNU General Public License for more details.
- *
  */
 
 #ifndef __MACH_TEGRA_RESET_H
@@ -30,9 +29,14 @@
 #define TEGRA_RESET_C1_L2_TAG_LATENCY	8
 #define TEGRA_RESET_C1_L2_DATA_LATENCY	9
 #define TEGRA_RESET_MASK_MC_CLK		10
-#define TEGRA_RESET_DATA_SIZE		11
+#define TEGRA_RESET_SECURE_FW_PRESENT	11
+#define TEGRA_RESET_DATA_SIZE		12
 
+#ifdef CONFIG_ARM64
+#define RESET_DATA(x)	((TEGRA_RESET_##x)*8)
+#else
 #define RESET_DATA(x)	((TEGRA_RESET_##x)*4)
+#endif
 
 #ifndef __ASSEMBLY__
 
@@ -47,63 +51,61 @@ void tegra_secondary_startup(void);
 
 #ifdef CONFIG_PM_SLEEP
 #define tegra_cpu_lp1_mask ((unsigned long *)(IO_ADDRESS(TEGRA_RESET_HANDLER_BASE + \
-		((u32)&__tegra_cpu_reset_handler_data[TEGRA_RESET_MASK_LP1] - \
-		 (u32)__tegra_cpu_reset_handler_start))))
+		((ulong)&__tegra_cpu_reset_handler_data[TEGRA_RESET_MASK_LP1] - \
+		 (ulong)__tegra_cpu_reset_handler_start))))
 
 #define tegra_mc_clk_mask ((unsigned long *)(IO_ADDRESS(TEGRA_RESET_HANDLER_BASE + \
-		((u32)&__tegra_cpu_reset_handler_data[TEGRA_RESET_MASK_MC_CLK] - \
-		 (u32)__tegra_cpu_reset_handler_start))))
+		((ulong)&__tegra_cpu_reset_handler_data[TEGRA_RESET_MASK_MC_CLK] - \
+		 (ulong)__tegra_cpu_reset_handler_start))))
 
 #define tegra_cpu_reset_handler_ptr ((u32 *)(IO_ADDRESS(TEGRA_RESET_HANDLER_BASE + \
-		((u32)__tegra_cpu_reset_handler_data - \
-		 (u32)__tegra_cpu_reset_handler_start))))
+		((ulong)__tegra_cpu_reset_handler_data - \
+		 (ulong)__tegra_cpu_reset_handler_start))))
 
 #define tegra_cpu_lp2_mask ((cpumask_t *)(IO_ADDRESS(TEGRA_RESET_HANDLER_BASE + \
-		((u32)&__tegra_cpu_reset_handler_data[TEGRA_RESET_MASK_LP2] - \
-		 (u32)__tegra_cpu_reset_handler_start))))
+		((ulong)&__tegra_cpu_reset_handler_data[TEGRA_RESET_MASK_LP2] - \
+		 (ulong)__tegra_cpu_reset_handler_start))))
 #endif
 
 #define tegra_cpu_c0_l2_tag_latency \
 	__tegra_cpu_reset_handler_data[TEGRA_RESET_C0_L2_TAG_LATENCY]
 
 #define tegra_cpu_c0_l2_tag_latency_iram \
-	((u32 *)(IO_ADDRESS(TEGRA_RESET_HANDLER_BASE +			\
-	((u32)&__tegra_cpu_reset_handler_data[TEGRA_RESET_C0_L2_TAG_LATENCY] \
-	 - (u32)__tegra_cpu_reset_handler_start))))
+	((ulong *)(IO_ADDRESS(TEGRA_RESET_HANDLER_BASE +			\
+	((ulong)&__tegra_cpu_reset_handler_data[TEGRA_RESET_C0_L2_TAG_LATENCY] \
+	 - (ulong)__tegra_cpu_reset_handler_start))))
 
 #define tegra_cpu_c0_l2_data_latency \
 	__tegra_cpu_reset_handler_data[TEGRA_RESET_C0_L2_DATA_LATENCY]
 
 #define tegra_cpu_c0_l2_data_latency_iram \
-	((u32 *)(IO_ADDRESS(TEGRA_RESET_HANDLER_BASE +			\
-	((u32)&__tegra_cpu_reset_handler_data[TEGRA_RESET_C0_L2_DATA_LATENCY] \
-	 - (u32)__tegra_cpu_reset_handler_start))))
+	((ulong *)(IO_ADDRESS(TEGRA_RESET_HANDLER_BASE +			\
+	((ulong)&__tegra_cpu_reset_handler_data[TEGRA_RESET_C0_L2_DATA_LATENCY] \
+	 - (ulong)__tegra_cpu_reset_handler_start))))
 
 #define tegra_cpu_c1_l2_tag_latency \
 	__tegra_cpu_reset_handler_data[TEGRA_RESET_C1_L2_TAG_LATENCY]
 
 #define tegra_cpu_c1_l2_tag_latency_iram \
-	((u32 *)(IO_ADDRESS(TEGRA_RESET_HANDLER_BASE +			\
-	((u32)&__tegra_cpu_reset_handler_data[TEGRA_RESET_C1_L2_TAG_LATENCY] \
-	 - (u32)__tegra_cpu_reset_handler_start))))
+	((ulong *)(IO_ADDRESS(TEGRA_RESET_HANDLER_BASE +			\
+	((ulong)&__tegra_cpu_reset_handler_data[TEGRA_RESET_C1_L2_TAG_LATENCY] \
+	 - (ulong)__tegra_cpu_reset_handler_start))))
 
 #define tegra_cpu_c1_l2_data_latency \
 	__tegra_cpu_reset_handler_data[TEGRA_RESET_C1_L2_DATA_LATENCY]
 
 #define tegra_cpu_c1_l2_data_latency_iram \
-	((u32 *)(IO_ADDRESS(TEGRA_RESET_HANDLER_BASE +			\
-	((u32)&__tegra_cpu_reset_handler_data[TEGRA_RESET_C1_L2_DATA_LATENCY] \
-	 - (u32)__tegra_cpu_reset_handler_start))))
+	((ulong *)(IO_ADDRESS(TEGRA_RESET_HANDLER_BASE +			\
+	((ulong)&__tegra_cpu_reset_handler_data[TEGRA_RESET_C1_L2_DATA_LATENCY] \
+	 - (ulong)__tegra_cpu_reset_handler_start))))
 
 #define tegra_cpu_reset_handler_offset \
-		((u32)__tegra_cpu_reset_handler - \
-		 (u32)__tegra_cpu_reset_handler_start)
+		((ulong)__tegra_cpu_reset_handler - \
+		 (ulong)__tegra_cpu_reset_handler_start)
 
 #define tegra_cpu_reset_handler_size \
 		(__tegra_cpu_reset_handler_end - \
 		 __tegra_cpu_reset_handler_start)
-
-void __init tegra_cpu_reset_handler_init(void);
 
 #ifdef CONFIG_PM_SLEEP
 void tegra_cpu_reset_handler_save(void);

@@ -35,6 +35,7 @@
 #include <linux/pstore_ram.h>
 #include <linux/dma-mapping.h>
 #include <linux/sys_soc.h>
+#include <linux/tegra-pmc.h>
 #if defined(CONFIG_SMSC911X)
 #include <linux/smsc911x.h>
 #endif
@@ -46,9 +47,14 @@
 #include <linux/tegra-soc.h>
 #include <linux/dma-contiguous.h>
 #include <linux/tegra-fuse.h>
+#ifdef CONFIG_TRUSTED_LITTLE_KERNEL
+#include <linux/ote_protocol.h>
+#endif
+#include <linux/gk20a.h>
 
 #ifdef CONFIG_ARM64
-#include <linux/irqchip/gic.h>
+#include <linux/irqchip/arm-gic.h>
+#include <asm/system_info.h>
 #else
 #include <asm/system.h>
 #include <asm/hardware/cache-l2x0.h>
@@ -69,7 +75,6 @@
 #include "sleep.h"
 #include "reset.h"
 #include "devices.h"
-#include "pmc.h"
 
 #define MC_SECURITY_CFG2	0x7c
 
@@ -143,7 +148,7 @@ phys_addr_t tegra_wb0_params_block_size;
 #ifdef CONFIG_TEGRA_NVDUMPER
 unsigned long nvdumper_reserved;
 #endif
-#ifdef CONFIG_TEGRA_USE_SECURE_KERNEL
+#ifdef CONFIG_TRUSTED_LITTLE_KERNEL
 unsigned long tegra_tzram_start;
 unsigned long tegra_tzram_size;
 #endif
@@ -167,6 +172,8 @@ unsigned long tegra_nck_start;
 unsigned long tegra_nck_size;
 #endif
 
+int tegra_with_secure_firmware;
+
 static int pmu_core_edp;
 static int board_panel_type;
 static enum power_supply_type pow_supply_type = POWER_SUPPLY_TYPE_MAINS;
@@ -179,14 +186,55 @@ static int tegra_split_mem_set;
 struct device tegra_generic_cma_dev;
 struct device tegra_vpr_cma_dev;
 
+struct device tegra_generic_dev;
+
+struct device tegra_vpr_dev;
+EXPORT_SYMBOL(tegra_vpr_dev);
+
+struct device tegra_iram_dev;
+EXPORT_SYMBOL(tegra_iram_dev);
+
 #define CREATE_TRACE_POINTS
 #include <trace/events/nvsecurity.h>
+
+static int tegra_update_resize_cfg(phys_addr_t base , size_t size)
+{
+	int err = 0;
+#ifdef CONFIG_TRUSTED_LITTLE_KERNEL
+#define MAX_RETRIES 6
+	int retries = MAX_RETRIES;
+
+retry:
+	err = gk20a_do_idle();
+	if (!err) {
+		/* Config VPR_BOM/_SIZE in MC */
+		err = te_set_vpr_params((void *)(uintptr_t)base, size);
+		gk20a_do_unidle();
+	} else {
+		if (retries--) {
+			pr_err("%s:%d: fail retry=%d",
+				__func__, __LINE__, MAX_RETRIES - retries);
+			msleep(1);
+			goto retry;
+		}
+	}
+#endif
+	return err;
+}
+
+struct dma_resize_notifier_ops vpr_dev_ops = {
+	.resize = tegra_update_resize_cfg
+};
 
 u32 notrace tegra_read_cycle(void)
 {
 	u32 cycle_count;
 
+#ifdef CONFIG_ARM64
+	asm volatile("mrs %0, pmccntr_el0" : "=r"(cycle_count));
+#else
 	asm volatile("mrc p15, 0, %0, c9, c13, 0" : "=r"(cycle_count));
+#endif
 
 	return cycle_count;
 }
@@ -285,6 +333,7 @@ static int emc_max_dvfs;
 static unsigned int memory_type;
 static int usb_port_owner_info;
 static int lane_owner_info;
+static int chip_personality;
 
 #ifdef CONFIG_ARCH_TEGRA_11x_SOC
 static __initdata struct tegra_clk_init_table tegra11x_clk_init_table[] = {
@@ -472,6 +521,9 @@ static __initdata struct tegra_clk_init_table tegra12x_clk_init_table[] = {
 	{ "soc_therm",	"pll_p",	51000000,	false },
 	{ "tsensor",	"clk_m",	500000,		false },
 #endif
+	{ "pll_d",	NULL,		0,		true },
+	{ "dsialp",	"pll_p",	70000000,       false },
+	{ "dsiblp",     "pll_p",        70000000,       false },
 	{ NULL,		NULL,		0,		0},
 };
 static __initdata struct tegra_clk_init_table tegra12x_cbus_init_table[] = {
@@ -571,7 +623,6 @@ static __initdata struct tegra_clk_init_table tegra14x_cbus_init_table[] = {
 #endif
 
 #ifdef CONFIG_CACHE_L2X0
-#ifdef CONFIG_TEGRA_USE_SECURE_KERNEL
 static void tegra_cache_smc(bool enable, u32 arg)
 {
 	void __iomem *p = IO_ADDRESS(TEGRA_ARM_PL310_BASE);
@@ -640,76 +691,73 @@ static void tegra_l2x0_disable(void)
 	tegra_cache_smc(false, l2x0_way_mask);
 	local_irq_restore(flags);
 }
-#endif	/* CONFIG_TEGRA_USE_SECURE_KERNEL */
 
 void tegra_init_cache(bool init)
 {
 	void __iomem *p = IO_ADDRESS(TEGRA_ARM_PL310_BASE);
 	u32 aux_ctrl;
-#ifndef CONFIG_TEGRA_USE_SECURE_KERNEL
 	u32 cache_type;
 	u32 tag_latency, data_latency;
-#endif
 
-#ifdef CONFIG_TEGRA_USE_SECURE_KERNEL
-	/* issue the SMC to enable the L2 */
-	aux_ctrl = readl_relaxed(p + L2X0_AUX_CTRL);
-	trace_smc_init_cache(NVSEC_SMC_START);
-	tegra_cache_smc(true, aux_ctrl);
-	trace_smc_init_cache(NVSEC_SMC_DONE);
+	if (tegra_cpu_is_secure()) {
+		/* issue the SMC to enable the L2 */
+		aux_ctrl = readl_relaxed(p + L2X0_AUX_CTRL);
+		trace_smc_init_cache(NVSEC_SMC_START);
+		tegra_cache_smc(true, aux_ctrl);
+		trace_smc_init_cache(NVSEC_SMC_DONE);
 
-	/* after init, reread aux_ctrl and register handlers */
-	aux_ctrl = readl_relaxed(p + L2X0_AUX_CTRL);
-	l2x0_init(p, aux_ctrl, 0xFFFFFFFF);
+		/* after init, reread aux_ctrl and register handlers */
+		aux_ctrl = readl_relaxed(p + L2X0_AUX_CTRL);
+		l2x0_init(p, aux_ctrl, 0xFFFFFFFF);
 
-	/* override outer_disable() with our disable */
-	outer_cache.disable = tegra_l2x0_disable;
-#else
-#if defined(CONFIG_ARCH_TEGRA_2x_SOC)
-	tag_latency = 0x331;
-	data_latency = 0x441;
-#else
-	if (!tegra_platform_is_silicon()) {
-		tag_latency = 0x770;
-		data_latency = 0x770;
-	} else if (is_lp_cluster()) {
-		tag_latency = tegra_cpu_c1_l2_tag_latency;
-		data_latency = tegra_cpu_c1_l2_data_latency;
+		/* override outer_disable() with our disable */
+		outer_cache.disable = tegra_l2x0_disable;
 	} else {
-		tag_latency = tegra_cpu_c0_l2_tag_latency;
-		data_latency = tegra_cpu_c0_l2_data_latency;
-	}
+#if defined(CONFIG_ARCH_TEGRA_2x_SOC)
+		tag_latency = 0x331;
+		data_latency = 0x441;
+#else
+		if (!tegra_platform_is_silicon()) {
+			tag_latency = 0x770;
+			data_latency = 0x770;
+		} else if (is_lp_cluster()) {
+			tag_latency = tegra_cpu_c1_l2_tag_latency;
+			data_latency = tegra_cpu_c1_l2_data_latency;
+		} else {
+			tag_latency = tegra_cpu_c0_l2_tag_latency;
+			data_latency = tegra_cpu_c0_l2_data_latency;
+		}
 #endif
-	writel_relaxed(tag_latency, p + L2X0_TAG_LATENCY_CTRL);
-	writel_relaxed(data_latency, p + L2X0_DATA_LATENCY_CTRL);
+		writel_relaxed(tag_latency, p + L2X0_TAG_LATENCY_CTRL);
+		writel_relaxed(data_latency, p + L2X0_DATA_LATENCY_CTRL);
 
 #if !defined(CONFIG_ARCH_TEGRA_2x_SOC)
-	if (!tegra_platform_is_fpga()) {
+		if (!tegra_platform_is_fpga()) {
 #ifdef CONFIG_ARCH_TEGRA_14x_SOC
-		/* Enable double line fill */
-		writel(0x40000007, p + L2X0_PREFETCH_CTRL);
+			/* Enable double line fill */
+			writel(0x40000007, p + L2X0_PREFETCH_CTRL);
 #else
-		writel(0x7, p + L2X0_PREFETCH_CTRL);
+			writel(0x7, p + L2X0_PREFETCH_CTRL);
 #endif
-		writel(0x3, p + L2X0_POWER_CTRL);
-	}
+			writel(0x3, p + L2X0_POWER_CTRL);
+		}
 #endif
-	cache_type = readl(p + L2X0_CACHE_TYPE);
-	aux_ctrl = (cache_type & 0x700) << (17-8);
-	aux_ctrl |= 0x7C400001;
-	if (init) {
-		l2x0_init(p, aux_ctrl, 0x8200c3fe);
-	} else {
-		u32 tmp;
+		cache_type = readl(p + L2X0_CACHE_TYPE);
+		aux_ctrl = (cache_type & 0x700) << (17-8);
+		aux_ctrl |= 0x7C400001;
+		if (init) {
+			l2x0_init(p, aux_ctrl, 0x8200c3fe);
+		} else {
+			u32 tmp;
 
-		tmp = aux_ctrl;
-		aux_ctrl = readl(p + L2X0_AUX_CTRL);
-		aux_ctrl &= 0x8200c3fe;
-		aux_ctrl |= tmp;
-		writel(aux_ctrl, p + L2X0_AUX_CTRL);
+			tmp = aux_ctrl;
+			aux_ctrl = readl(p + L2X0_AUX_CTRL);
+			aux_ctrl &= 0x8200c3fe;
+			aux_ctrl |= tmp;
+			writel(aux_ctrl, p + L2X0_AUX_CTRL);
+		}
+		l2x0_enable();
 	}
-	l2x0_enable();
-#endif
 }
 #endif
 
@@ -739,13 +787,31 @@ static void __init tegra_perf_init(void)
 #if !defined(CONFIG_ARCH_TEGRA_2x_SOC) && !defined(CONFIG_ARCH_TEGRA_3x_SOC)
 static void __init tegra_ramrepair_init(void)
 {
+#define RAM_REPAIR_TIMEOUT 500 /*usec */
 #if defined(CONFIG_ARCH_TEGRA_11x_SOC)
 	if (tegra_spare_fuse(10)  | tegra_spare_fuse(11)) {
 #endif
 		u32 reg;
+		u32 timeout = RAM_REPAIR_TIMEOUT;
+		/* ram repair for Fast Cluster0*/
 		reg = readl(FLOW_CTRL_RAM_REPAIR);
 		reg &= ~FLOW_CTRL_RAM_REPAIR_BYPASS_EN;
 		writel(reg, FLOW_CTRL_RAM_REPAIR);
+
+#if defined(CONFIG_ARCH_TEGRA_12x_SOC)
+		/* Ram Repair for Slow Cluster1 */
+		reg = readl(FLOW_CTRL_RAM_REPAIR_1);
+		reg |= FLOW_CTRL_RAM_REPAIR_REQ;
+		writel(reg, FLOW_CTRL_RAM_REPAIR_1);
+		do {
+			udelay(1);
+			reg = readl(FLOW_CTRL_RAM_REPAIR_1);
+		} while (!(reg & FLOW_CTRL_RAM_REPAIR_STS) && (timeout--));
+		if (!timeout) {
+			pr_err("Slow Cluster Ram Repair failed");
+			pr_err("reg 0x%x timeout %d\n", reg, timeout);
+		}
+#endif
 #if defined(CONFIG_ARCH_TEGRA_11x_SOC)
 	}
 #endif
@@ -870,17 +936,10 @@ static void __init tegra_init_ahb_gizmo_settings(void)
 #ifdef CONFIG_ARCH_TEGRA_2x_SOC
 void __init tegra20_init_early(void)
 {
-#ifndef CONFIG_SMP
-	/* For SMP system, initializing the reset handler here is too
-	   late. For non-SMP systems, the function that calls the reset
-	   handler initializer is not called, so do it here for non-SMP. */
-	tegra_cpu_reset_handler_init();
-#endif
 	tegra_apb_io_init();
 	tegra_perf_init();
 	tegra_init_fuse();
 	tegra_init_cache(true);
-	tegra_pmc_init();
 	tegra_powergate_init();
 	tegra20_hotplug_init();
 	tegra_init_power();
@@ -895,12 +954,6 @@ void __init tegra30_init_early(void)
 	u32 tag_latency, data_latency;
 
 	display_tegra_dt_info();
-#ifndef CONFIG_SMP
-	/* For SMP system, initializing the reset handler here is too
-	   late. For non-SMP systems, the function that calls the reset
-	   handler initializer is not called, so do it here for non-SMP. */
-	tegra_cpu_reset_handler_init();
-#endif
 	tegra_apb_io_init();
 	tegra_perf_init();
 	tegra_init_fuse();
@@ -926,7 +979,6 @@ void __init tegra30_init_early(void)
 	writel_relaxed(tag_latency, tegra_cpu_c0_l2_tag_latency_iram);
 	writel_relaxed(data_latency, tegra_cpu_c0_l2_data_latency_iram);
 	tegra_init_cache(true);
-	tegra_pmc_init();
 	tegra_powergate_init();
 	tegra30_hotplug_init();
 	tegra_init_power();
@@ -940,12 +992,6 @@ void __init tegra30_init_early(void)
 void __init tegra11x_init_early(void)
 {
 	display_tegra_dt_info();
-#ifndef CONFIG_SMP
-	/* For SMP system, initializing the reset handler here is too
-	   late. For non-SMP systems, the function that calls the reset
-	   handler initializer is not called, so do it here for non-SMP. */
-	tegra_cpu_reset_handler_init();
-#endif
 	tegra_apb_io_init();
 	tegra_perf_init();
 	tegra_init_fuse();
@@ -956,7 +1002,6 @@ void __init tegra11x_init_early(void)
 	tegra_clk_init_from_table(tegra11x_clk_init_table);
 	tegra_clk_init_cbus_plls_from_table(tegra11x_cbus_init_table);
 	tegra11x_clk_init_la();
-	tegra_pmc_init();
 	tegra_powergate_init();
 	tegra30_hotplug_init();
 	tegra_init_power();
@@ -969,25 +1014,27 @@ void __init tegra11x_init_early(void)
 #ifdef CONFIG_ARCH_TEGRA_12x_SOC
 void __init tegra12x_init_early(void)
 {
+	if (of_find_compatible_node(NULL, NULL, "arm,psci"))
+		tegra_with_secure_firmware = 1;
+
 	display_tegra_dt_info();
-#ifndef CONFIG_SMP
-	/* For SMP system, initializing the reset handler here is too
-	   late. For non-SMP systems, the function that calls the reset
-	   handler initializer is not called, so do it here for non-SMP. */
-	tegra_cpu_reset_handler_init();
-#endif
 	tegra_apb_io_init();
 	tegra_perf_init();
 	tegra_init_fuse();
 	tegra_ramrepair_init();
 	tegra12x_init_clocks();
+#ifdef CONFIG_ARCH_TEGRA_13x_SOC
+	tegra13x_init_dvfs();
+#else
 	tegra12x_init_dvfs();
+#endif
 	tegra_common_init_clock();
 	tegra_clk_init_from_table(tegra12x_clk_init_table);
 	tegra_clk_init_cbus_plls_from_table(tegra12x_cbus_init_table);
-	tegra_pmc_init();
 	tegra_powergate_init();
+#ifndef CONFIG_ARM64
 	tegra30_hotplug_init();
+#endif
 	tegra_init_power();
 	tegra_init_ahb_gizmo_settings();
 	tegra_init_debug_uart_rate();
@@ -997,12 +1044,6 @@ void __init tegra12x_init_early(void)
 void __init tegra14x_init_early(void)
 {
 	display_tegra_dt_info();
-#ifndef CONFIG_SMP
-	/* For SMP system, initializing the reset handler here is too
-	   late. For non-SMP systems, the function that calls the reset
-	   handler initializer is not called, so do it here for non-SMP. */
-	tegra_cpu_reset_handler_init();
-#endif
 	tegra_apb_io_init();
 	tegra_perf_init();
 	tegra_init_fuse();
@@ -1021,7 +1062,6 @@ void __init tegra14x_init_early(void)
 	writel_relaxed(0x111, tegra_cpu_c0_l2_tag_latency_iram);
 	writel_relaxed(0x441, tegra_cpu_c0_l2_data_latency_iram);
 	tegra_init_cache(true);
-	tegra_pmc_init();
 	tegra_powergate_init();
 	tegra30_hotplug_init();
 	tegra_init_power();
@@ -1118,6 +1158,22 @@ int tegra_get_sku_override(void)
 	return sku_override;
 }
 
+static int __init tegra_chip_personality(char *id)
+{
+	char *p = id;
+
+	chip_personality = memparse(p, &p);
+
+	return 0;
+}
+early_param("chip_personality", tegra_chip_personality);
+
+int tegra_get_chip_personality(void)
+{
+	return chip_personality;
+}
+
+#ifndef CONFIG_NVMAP_USE_CMA_FOR_CARVEOUT
 static int __init tegra_vpr_arg(char *options)
 {
 	char *p = options;
@@ -1130,6 +1186,7 @@ static int __init tegra_vpr_arg(char *options)
 	return 0;
 }
 early_param("vpr", tegra_vpr_arg);
+#endif
 
 static int __init tegra_tsec_arg(char *options)
 {
@@ -1144,7 +1201,7 @@ static int __init tegra_tsec_arg(char *options)
 }
 early_param("tsec", tegra_tsec_arg);
 
-#ifdef CONFIG_TEGRA_USE_SECURE_KERNEL
+#ifdef CONFIG_TRUSTED_LITTLE_KERNEL
 static int __init tegra_tzram_arg(char *options)
 {
 	char *p = options;
@@ -1481,24 +1538,11 @@ void tegra_get_board_info(struct board_info *bi)
 			pr_err("failed to read /chosen/board_info/minor_revision\n");
 		else
 			bi->minor_revision = prop_val;
-#ifndef CONFIG_ARM64
 		system_serial_high = (bi->board_id << 16) | bi->sku;
 		system_serial_low = (bi->fab << 24) |
 			(bi->major_revision << 16) | (bi->minor_revision << 8);
-#endif
 	} else {
 #endif
-#ifdef CONFIG_ARM64
-		/* FIXME:
-		 * use dummy values for now as system_serial_high/low
-		 * are gone in arm64.
-		 */
-		bi->board_id = 0xDEAD;
-		bi->sku = 0xDEAD;
-		bi->fab = 0xDD;
-		bi->major_revision = 0xDD;
-		bi->minor_revision = 0xDD;
-#else
 		if (system_serial_high || system_serial_low) {
 			bi->board_id = (system_serial_high >> 16) & 0xFFFF;
 			bi->sku = (system_serial_high) & 0xFFFF;
@@ -1508,11 +1552,11 @@ void tegra_get_board_info(struct board_info *bi)
 		} else {
 			memcpy(bi, &main_board_info, sizeof(struct board_info));
 		}
-#endif
 #ifdef CONFIG_OF
 	}
 #endif
 }
+EXPORT_SYMBOL(tegra_get_board_info);
 
 #ifdef CONFIG_OF
 void find_dc_node(struct device_node **dc1_node,
@@ -1780,7 +1824,7 @@ void __tegra_move_framebuffer(struct platform_device *pdev,
 	BUG_ON(PAGE_ALIGN(from) != from);
 	BUG_ON(PAGE_ALIGN(size) != size);
 
-	to_io = ioremap(to, size);
+	to_io = ioremap_wc(to, size);
 	if (!to_io) {
 		pr_err("%s: Failed to map target framebuffer\n", __func__);
 		return;
@@ -1794,7 +1838,7 @@ void __tegra_move_framebuffer(struct platform_device *pdev,
 			kunmap(page);
 		}
 	} else if (from) {
-		void __iomem *from_io = ioremap(from, size);
+		void __iomem *from_io = ioremap_wc(from, size);
 		if (!from_io) {
 			pr_err("%s: Failed to map source framebuffer\n",
 				__func__);
@@ -1802,7 +1846,8 @@ void __tegra_move_framebuffer(struct platform_device *pdev,
 		}
 
 		for (i = 0; i < size; i += 4)
-			writel(readl(from_io + i), to_io + i);
+			writel_relaxed(readl_relaxed(from_io + i), to_io + i);
+		dmb();
 
 		iounmap(from_io);
 	}
@@ -1820,7 +1865,7 @@ void __tegra_clear_framebuffer(struct platform_device *pdev,
 	BUG_ON(PAGE_ALIGN((unsigned long)to) != (unsigned long)to);
 	BUG_ON(PAGE_ALIGN(size) != size);
 
-	to_io = ioremap(to, size);
+	to_io = ioremap_wc(to, size);
 	if (!to_io) {
 		pr_err("%s: Failed to map target framebuffer\n", __func__);
 		return;
@@ -1831,7 +1876,8 @@ void __tegra_clear_framebuffer(struct platform_device *pdev,
 			memset(to_io + i, 0, PAGE_SIZE);
 	} else {
 		for (i = 0; i < size; i += 4)
-			writel(0, to_io + i);
+			writel_relaxed(0, to_io + i);
+		dmb();
 	}
 
 	iounmap(to_io);
@@ -1847,6 +1893,7 @@ static struct platform_device ramoops_dev  = {
 	},
 };
 
+
 static void __init tegra_reserve_ramoops_memory(unsigned long reserve_size)
 {
 	ramoops_data.mem_size = reserve_size;
@@ -1854,7 +1901,7 @@ static void __init tegra_reserve_ramoops_memory(unsigned long reserve_size)
 	ramoops_data.console_size = reserve_size - FTRACE_MEM_SIZE;
 	ramoops_data.ftrace_size = FTRACE_MEM_SIZE;
 	ramoops_data.dump_oops = 1;
-	memblock_reserve(ramoops_data.mem_address, ramoops_data.mem_size);
+	memblock_remove(ramoops_data.mem_address, ramoops_data.mem_size);
 }
 
 static int __init tegra_register_ramoops_device(void)
@@ -2128,7 +2175,7 @@ void __init tegra_reserve(unsigned long carveout_size, unsigned long fb_size,
 	}
 #endif
 
-#ifdef CONFIG_TEGRA_USE_SECURE_KERNEL
+#ifdef CONFIG_TRUSTED_LITTLE_KERNEL
 	pr_info("Tzram:               %08lx - %08lx\n",
 		tegra_tzram_start,
 		tegra_tzram_size ?
@@ -2142,6 +2189,10 @@ void __init tegra_reserve(unsigned long carveout_size, unsigned long fb_size,
 			tegra_nck_size ?
 				tegra_nck_start + tegra_nck_size - 1 : 0);
 	}
+#endif
+
+#ifdef CONFIG_PSTORE_RAM
+	tegra_reserve_ramoops_memory(RAMOOPS_MEM_SIZE);
 #endif
 
 #ifdef CONFIG_NVMAP_USE_CMA_FOR_CARVEOUT
@@ -2160,9 +2211,16 @@ void __init tegra_reserve(unsigned long carveout_size, unsigned long fb_size,
 #endif
 
 	tegra_fb_linear_set(map);
-#ifdef CONFIG_PSTORE_RAM
-	tegra_reserve_ramoops_memory(RAMOOPS_MEM_SIZE);
+}
+
+void tegra_reserve4(ulong carveout_size, ulong fb_size,
+		       ulong fb2_size, ulong vpr_size)
+{
+#ifdef CONFIG_NVMAP_USE_CMA_FOR_CARVEOUT
+	tegra_vpr_start = 0;
+	tegra_vpr_size = vpr_size;
 #endif
+	tegra_reserve(carveout_size, fb_size, fb2_size);
 }
 
 void tegra_get_fb_resource(struct resource *fb_res)
@@ -2178,6 +2236,8 @@ void tegra_get_fb2_resource(struct resource *fb2_res)
 	fb2_res->end = fb2_res->start +
 			(resource_size_t) tegra_fb2_size - 1;
 }
+
+
 
 int __init tegra_register_fuse(void)
 {
@@ -2240,6 +2300,9 @@ static const char * __init tegra_get_family(void)
 		break;
 	case TEGRA_CHIPID_TEGRA12:
 		cid = 12;
+		break;
+	case TEGRA_CHIPID_TEGRA13:
+		cid = 13;
 		break;
 	case TEGRA_CHIPID_TEGRA14:
 		cid = 14;
@@ -2381,7 +2444,7 @@ static struct platform_device tegra_smsc911x_device = {
 
 static int __init enet_smsc911x_init(void)
 {
-	if (!tegra_cpu_is_dsim())
+	if (!tegra_cpu_is_dsim() && !tegra_platform_is_qt())
 		platform_device_register(&tegra_smsc911x_device);
 	return 0;
 }
@@ -2402,10 +2465,13 @@ static int __init set_tegra_split_mem(char *options)
 early_param("tegra_split_mem", set_tegra_split_mem);
 
 #define FUSE_SKU_INFO       0x110
+#if defined(CONFIG_ARCH_TEGRA_12x_SOC)
+#define STRAP_OPT 0x464
+#define RAM_ID_MASK (0xF << 4)
+#else
 #define STRAP_OPT 0x008
-#define GMI_AD0 BIT(4)
-#define GMI_AD1 BIT(5)
-#define RAM_ID_MASK (GMI_AD0 | GMI_AD1)
+#define RAM_ID_MASK (3 << 4)
+#endif
 #define RAM_CODE_SHIFT 4
 
 #ifdef CONFIG_TEGRA_PRE_SILICON_SUPPORT
@@ -2475,8 +2541,11 @@ static void tegra_set_chip_id(void)
 static void tegra_set_bct_strapping(void)
 {
 	u32 reg;
-
+#if defined(CONFIG_ARCH_TEGRA_12x_SOC)
+	reg = readl(IO_ADDRESS(TEGRA_PMC_BASE + STRAP_OPT));
+#else
 	reg = readl(IO_ADDRESS(TEGRA_APB_MISC_BASE + STRAP_OPT));
+#endif
 	tegra_chip_bct_strapping = (reg & RAM_ID_MASK) >> RAM_CODE_SHIFT;
 }
 

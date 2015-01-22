@@ -1,7 +1,7 @@
 /*
  * arch/arm/mach-tegra/include/mach/nct.h
  *
- * Copyright (c) 2013, NVIDIA CORPORATION.  All rights reserved.
+ * Copyright (c) 2013-2014, NVIDIA CORPORATION.  All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -21,7 +21,7 @@
 #ifndef __MACH_TEGRA_NCT_H
 #define __MACH_TEGRA_NCT_H
 
-#include <linux/platform_data/tegra_emc.h>
+#include <linux/platform_data/tegra_emc_pdata.h>
 
 #define NCT_MAGIC_ID		0x7443566E /* "nVCt" */
 
@@ -64,11 +64,7 @@ struct nct_serial_number_type {
 	char sn[30];
 };
 
-struct nct_wifi_mac_addr_type {
-	u8 addr[6];
-};
-
-struct nct_bt_addr_type {
+struct nct_mac_addr_type {
 	u8 addr[6];
 };
 
@@ -107,8 +103,8 @@ union nct_tegra_emc_table_type {
 
 union nct_item_type {
 	struct nct_serial_number_type	serial_number;
-	struct nct_wifi_mac_addr_type	wifi_mac_addr;
-	struct nct_bt_addr_type		bt_addr;
+	struct nct_mac_addr_type	wifi_mac_addr;
+	struct nct_mac_addr_type	bt_addr;
 	struct nct_cm_id_type		cm_id;
 	struct nct_lbh_id_type		lbh_id;
 	struct nct_factory_mode_type	factory_mode;

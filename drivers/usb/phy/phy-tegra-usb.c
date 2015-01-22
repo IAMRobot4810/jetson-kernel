@@ -1,6 +1,6 @@
 /*
  * Copyright (C) 2010 Google, Inc.
- * Copyright (c) 2010-2013, NVIDIA CORPORATION.  All rights reserved.
+ * Copyright (c) 2010-2014, NVIDIA CORPORATION.  All rights reserved.
  *
  * Author:
  *	Erik Gilling <konkers@google.com>
@@ -84,6 +84,7 @@ static void print_usb_plat_data_info(struct tegra_usb_phy *phy)
 	pr_info("has_hostpc: %s\n", pdata->has_hostpc ? "yes" : "no");
 	pr_info("phy_interface: %s\n", phy_intf[pdata->phy_intf]);
 	pr_info("op_mode: %s\n", op_mode[pdata->op_mode]);
+	pr_info("qc2_voltage: %d\n", pdata->qc2_voltage);
 	if (pdata->op_mode == TEGRA_USB_OPMODE_DEVICE) {
 		pr_info("vbus_pmu_irq: %d\n", pdata->u_data.dev.vbus_pmu_irq);
 		pr_info("vbus_gpio: %d\n", pdata->u_data.dev.vbus_gpio);
@@ -263,7 +264,7 @@ static int tegra_usb_phy_get_clocks(struct tegra_usb_phy *phy)
 	}
 
 	if(phy->pdata->has_hostpc)
-		clk_set_rate(phy->emc_clk, 100000000);
+		clk_set_rate(phy->emc_clk, 12750000);
 	else
 		clk_set_rate(phy->emc_clk, 300000000);
 
@@ -350,7 +351,6 @@ int tegra_usb_phy_init(struct usb_phy *x)
 {
 	int status = 0;
 	struct tegra_usb_phy *phy = get_tegra_phy(x);
-
 	DBG("%s(%d) inst:[%d]\n", __func__, __LINE__, phy->inst);
 
 	if (phy->pdata->ops && phy->pdata->ops->init)
@@ -607,6 +607,41 @@ bool tegra_usb_phy_charger_detected(struct tegra_usb_phy *phy)
 	return status;
 }
 
+bool tegra_usb_phy_cdp_charger_detected(struct tegra_usb_phy *phy)
+{
+	bool status = 0;
+
+	DBG("%s(%d) inst:[%d]\n", __func__, __LINE__, phy->inst);
+	if (phy->ops && phy->ops->cdp_charger_detect)
+		status = phy->ops->cdp_charger_detect(phy);
+
+	return status;
+}
+
+bool tegra_usb_phy_qc2_charger_detected(struct tegra_usb_phy *phy,
+			int max_voltage)
+{
+	bool status = 0;
+
+	DBG("%s(%d) inst:[%d] max_voltage = %d\n", __func__, __LINE__,
+		phy->inst, max_voltage);
+	if (phy->ops && phy->ops->qc2_charger_detect)
+		status = phy->ops->qc2_charger_detect(phy, max_voltage);
+
+	return status;
+}
+
+bool tegra_usb_phy_maxim_charger_detected(struct tegra_usb_phy *phy)
+{
+	bool status = 0;
+
+	DBG("%s(%d) inst:[%d]\n", __func__, __LINE__, phy->inst);
+	if (phy->ops && phy->ops->maxim_charger_14675)
+		status = phy->ops->maxim_charger_14675(phy);
+
+	return status;
+}
+
 bool tegra_usb_phy_nv_charger_detected(struct tegra_usb_phy *phy)
 {
 	bool status = 0;
@@ -667,7 +702,7 @@ EXPORT_SYMBOL_GPL(tegra_usb_phy_pmc_wakeup);
 void tegra_usb_phy_memory_prefetch_on(struct tegra_usb_phy *phy)
 {
 	void __iomem *ahb_gizmo = IO_ADDRESS(TEGRA_AHB_GIZMO_BASE);
-	unsigned long val;
+	u32 val;
 
 	if (phy->inst == 0 && phy->pdata->op_mode == TEGRA_USB_OPMODE_DEVICE) {
 		val = readl(ahb_gizmo + AHB_MEM_PREFETCH_CFG1);
@@ -682,7 +717,7 @@ void tegra_usb_phy_memory_prefetch_on(struct tegra_usb_phy *phy)
 void tegra_usb_phy_memory_prefetch_off(struct tegra_usb_phy *phy)
 {
 	void __iomem *ahb_gizmo = IO_ADDRESS(TEGRA_AHB_GIZMO_BASE);
-	unsigned long val;
+	u32 val;
 
 	if (phy->inst == 0 && phy->pdata->op_mode == TEGRA_USB_OPMODE_DEVICE) {
 		val = readl(ahb_gizmo + AHB_MEM_PREFETCH_CFG1);
@@ -702,6 +737,50 @@ int tegra_usb_phy_set_suspend(struct usb_phy *x, int suspend)
 		return tegra_usb_phy_suspend(phy);
 	else
 		return tegra_usb_phy_resume(phy);
+}
+
+static int tegra_usb_phy_set_clk_freq(struct tegra_usb_phy *phy,
+		enum usb_device_speed speed)
+{
+	switch (speed) {
+	case USB_SPEED_HIGH:
+		if (phy->pdata->has_hostpc) {
+			DBG("%s(%d) USB_SPEED_HIGH\n",
+				__func__, __LINE__);
+			clk_set_rate(phy->emc_clk, 100000000);
+		}
+		break;
+	case USB_SPEED_LOW:
+	case USB_SPEED_FULL:
+	default:
+		if (phy->pdata->has_hostpc) {
+			DBG("%s(%d) USB_SPEED_LOW/USB_SPEED_FULL/default\n",
+				__func__, __LINE__);
+			clk_set_rate(phy->emc_clk, 12750000);
+		}
+	}
+
+	return 0;
+}
+
+static int tegra_usb_phy_notify_connect(struct usb_phy *x,
+		enum usb_device_speed speed)
+{
+	struct tegra_usb_phy *phy = get_tegra_phy(x);
+
+	tegra_usb_phy_set_clk_freq(phy, speed);
+
+	return 0;
+}
+
+static int tegra_usb_phy_notify_disconnect(struct usb_phy *x,
+		enum usb_device_speed speed)
+{
+	struct tegra_usb_phy *phy = get_tegra_phy(x);
+
+	tegra_usb_phy_set_clk_freq(phy, USB_SPEED_LOW);
+
+	return 0;
 }
 
 struct tegra_usb_phy *tegra_usb_phy_open(struct platform_device *pdev)
@@ -834,6 +913,8 @@ struct tegra_usb_phy *tegra_usb_phy_open(struct platform_device *pdev)
 	phy->phy.init = tegra_usb_phy_init;
 	phy->phy.shutdown = tegra_usb_phy_close;
 	phy->phy.set_suspend = tegra_usb_phy_set_suspend;
+	phy->phy.notify_connect = tegra_usb_phy_notify_connect;
+	phy->phy.notify_disconnect = tegra_usb_phy_notify_disconnect;
 
 	return phy;
 

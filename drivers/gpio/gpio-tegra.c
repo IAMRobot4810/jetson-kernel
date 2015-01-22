@@ -154,18 +154,12 @@ void tegra_gpio_init_configure(unsigned gpio, bool is_input, int value)
 
 static int tegra_gpio_request(struct gpio_chip *chip, unsigned offset)
 {
-#if 0
-	return pinctrl_request_gpio(offset);
-#else
-	return 0;
-#endif
+	return pinctrl_request_gpio(chip->base + offset);
 }
 
 static void tegra_gpio_free(struct gpio_chip *chip, unsigned offset)
 {
-#if 0
-	pinctrl_free_gpio(offset);
-#endif
+	pinctrl_free_gpio(chip->base + offset);
 	tegra_gpio_disable(offset);
 }
 
@@ -186,17 +180,33 @@ static int tegra_gpio_get(struct gpio_chip *chip, unsigned offset)
 
 static int tegra_gpio_direction_input(struct gpio_chip *chip, unsigned offset)
 {
+	int ret;
+
 	tegra_gpio_mask_write(GPIO_MSK_OE(offset), offset, 0);
 	tegra_gpio_enable(offset);
+
+	ret = pinctrl_gpio_direction_input(chip->base + offset);
+	if (ret < 0)
+		dev_err(chip->dev,
+			"Tegra gpio input: pinctrl input failed: %d\n", ret);
+
 	return 0;
 }
 
 static int tegra_gpio_direction_output(struct gpio_chip *chip, unsigned offset,
 					int value)
 {
+	int ret;
+
 	tegra_gpio_set(chip, offset, value);
 	tegra_gpio_mask_write(GPIO_MSK_OE(offset), offset, 1);
 	tegra_gpio_enable(offset);
+
+	ret = pinctrl_gpio_direction_output(chip->base + offset);
+	if (ret < 0)
+		dev_err(chip->dev,
+			"Tegra gpio output: pinctrl output failed: %d\n", ret);
+
 	return 0;
 }
 
@@ -646,14 +656,18 @@ static int dbg_gpio_show(struct seq_file *s, void *unused)
 {
 	int i;
 	int j;
+	char x,y;
 
-	seq_printf(s, "Bank:Port CNF OE OUT IN INT_STA INT_ENB INT_LVL\n");
+	x = ' ';
+	y = 'A';
+
+	seq_printf(s, "Name:Bank:Port CNF OE OUT IN INT_STA INT_ENB INT_LVL\n");
 	for (i = 0; i < tegra_gpio_bank_count; i++) {
 		for (j = 0; j < 4; j++) {
 			int gpio = tegra_gpio_compose(i, j, 0);
 			seq_printf(s,
-				"%d:%d %02x %02x %02x %02x %02x %02x %06x\n",
-				i, j,
+				"%c%c: %d:%d %02x %02x %02x %02x %02x %02x %06x\n",
+				x, y, i, j,
 				tegra_gpio_readl(GPIO_CNF(gpio)),
 				tegra_gpio_readl(GPIO_OE(gpio)),
 				tegra_gpio_readl(GPIO_OUT(gpio)),
@@ -661,6 +675,15 @@ static int dbg_gpio_show(struct seq_file *s, void *unused)
 				tegra_gpio_readl(GPIO_INT_STA(gpio)),
 				tegra_gpio_readl(GPIO_INT_ENB(gpio)),
 				tegra_gpio_readl(GPIO_INT_LVL(gpio)));
+
+			if (x != ' ')
+				x++;
+			if (y == 'Z') {
+				y = 'A';
+				x = 'A';
+			} else {
+				y++;
+			};
 		}
 	}
 	return 0;

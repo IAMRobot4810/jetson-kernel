@@ -84,6 +84,12 @@ enum {
 	 */
 	HDMI_STATE_DONE_RECHECK_EDID,
 
+	/* Initial state at boot that checks if HDMI is already initialized
+	 * by bootloader and not go to HDMI_STATE_RESET which would disable
+	 * HDMI and cause blanking of the bootloader displayed image.
+	 */
+	HDMI_STATE_INIT_FROM_BOOTLOADER,
+
 	/* STATE_COUNT must be the final state in the enum.
 	 * 1) Do not add states after STATE_COUNT.
 	 * 2) Do not assign explicit values to the states.
@@ -97,6 +103,5 @@ void hdmi_state_machine_init(struct tegra_dc_hdmi_data *hdmi);
 void hdmi_state_machine_shutdown(void);
 void hdmi_state_machine_set_pending_hpd(void);
 int hdmi_state_machine_get_state(void);
-bool hdmi_reread_edid(struct tegra_dc *dc);
 
 #endif  /* __TEGRA_HDMI_STATE_MACHINE_H */

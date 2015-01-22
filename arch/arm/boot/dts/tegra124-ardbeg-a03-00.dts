@@ -1,14 +1,1 @@
-/dts-v1/;
-
-#include "tegra124-ardbeg-a03.dtsi"
-#include "tegra124-platforms/tegra124-e1780-powermon.dtsi"
-#include "tegra124-platforms/tegra124-e1780-gpio-default.dtsi"
-#include "tegra124-platforms/tegra124-e1780-pinmux.dtsi"
-#include "tegra124-platforms/tegra124-e1780-keys.dtsi"
-
-/ {
-	model = "NVIDIA Tegra124 Ardbeg";
-	compatible = "nvidia,ardbeg", "nvidia,tegra124";
-	nvidia,boardids = "1780:1000:3:B:3";
-	nvidia,dtsfilename = __FILE__;
-};
+#include "tegra124-ardbeg-e1780-1000-a03-00.dts"

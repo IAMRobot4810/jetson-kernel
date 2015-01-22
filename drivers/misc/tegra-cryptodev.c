@@ -3,7 +3,7 @@
  *
  * crypto dev node for NVIDIA tegra aes hardware
  *
- * Copyright (c) 2010-2013, NVIDIA Corporation. All Rights Reserved.
+ * Copyright (c) 2010-2014, NVIDIA Corporation. All Rights Reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -486,7 +486,8 @@ static int tegra_crypt_rsa(struct tegra_crypto_ctx *ctx,
 		goto rsa_fail;
 
 	if (!rsa_req->skip_key) {
-		ret = crypto_ahash_setkey(tfm, rsa_req->key, rsa_req->keylen);
+		ret = crypto_ahash_setkey(tfm,
+				rsa_req->key, rsa_req->keylen);
 		if (ret) {
 			pr_err("alg: hash: setkey failed\n");
 			goto rsa_fail;
@@ -540,15 +541,15 @@ static int tegra_crypto_sha(struct tegra_sha_req *sha_req)
 
 	tfm = crypto_alloc_ahash(sha_req->algo, 0, 0);
 	if (IS_ERR(tfm)) {
-		printk(KERN_ERR "alg: hash: Failed to load transform for %s: "
-		       "%ld\n", sha_req->algo, PTR_ERR(tfm));
+		pr_err("alg:hash:Failed to load transform for %s:%ld\n",
+			sha_req->algo, PTR_ERR(tfm));
 		goto out_alloc;
 	}
 
 	req = ahash_request_alloc(tfm, GFP_KERNEL);
 	if (!req) {
-		printk(KERN_ERR "alg: hash: Failed to allocate request for "
-		       "%s\n", sha_req->algo);
+		pr_err("alg:hash:Failed to allocate request for %s\n",
+			sha_req->algo);
 		goto out_noreq;
 	}
 
@@ -572,9 +573,9 @@ static int tegra_crypto_sha(struct tegra_sha_req *sha_req)
 		ret = crypto_ahash_setkey(tfm, sha_req->key,
 					  sha_req->keylen);
 		if (ret) {
-			printk(KERN_ERR "alg: hash: setkey failed on "
-			       " %s: ret=%d\n", sha_req->algo,
-			       -ret);
+			pr_err("alg:hash:setkey failed on %s:ret=%d\n",
+				sha_req->algo, ret);
+
 			goto out;
 		}
 	}
@@ -583,22 +584,22 @@ static int tegra_crypto_sha(struct tegra_sha_req *sha_req)
 
 	ret = sha_async_hash_op(req, &sha_complete, crypto_ahash_init(req));
 	if (ret) {
-		pr_err("alg: hash: init failed on "
-		       "for %s: ret=%d\n", sha_req->algo, -ret);
+		pr_err("alg: hash: init failed for %s: ret=%d\n",
+			sha_req->algo, ret);
 		goto out;
 	}
 
 	ret = sha_async_hash_op(req, &sha_complete, crypto_ahash_update(req));
 	if (ret) {
-		pr_err("alg: hash: update failed on "
-		       "for %s: ret=%d\n", sha_req->algo, -ret);
+		pr_err("alg: hash: update failed for %s: ret=%d\n",
+			sha_req->algo, ret);
 		goto out;
 	}
 
 	ret = sha_async_hash_op(req, &sha_complete, crypto_ahash_final(req));
 	if (ret) {
-		pr_err("alg: hash: final failed on "
-		       "for %s: ret=%d\n", sha_req->algo, -ret);
+		pr_err("alg: hash: final failed for %s: ret=%d\n",
+			sha_req->algo, ret);
 		goto out;
 	}
 
@@ -631,6 +632,13 @@ static long tegra_crypto_dev_ioctl(struct file *filp,
 	struct tegra_rng_req rng_req;
 	struct tegra_sha_req sha_req;
 	struct tegra_rsa_req rsa_req;
+#ifdef CONFIG_COMPAT
+	struct tegra_crypt_req_32 crypt_req_32;
+	struct tegra_rng_req_32 rng_req_32;
+	struct tegra_sha_req_32 sha_req_32;
+	struct tegra_rsa_req_32 rsa_req_32;
+	int i = 0;
+#endif
 	char *rng;
 	int ret = 0;
 
@@ -639,6 +647,31 @@ static long tegra_crypto_dev_ioctl(struct file *filp,
 	case TEGRA_CRYPTO_IOCTL_NEED_SSK:
 		ctx->use_ssk = (int)arg;
 		break;
+
+#ifdef CONFIG_COMPAT
+	case TEGRA_CRYPTO_IOCTL_PROCESS_REQ_32:
+		ret = copy_from_user(&crypt_req_32, (void __user *)arg,
+			sizeof(crypt_req_32));
+
+		crypt_req.op = crypt_req_32.op;
+		crypt_req.encrypt = crypt_req_32.encrypt;
+		crypt_req.skip_key = crypt_req_32.skip_key;
+		crypt_req.skip_iv = crypt_req_32.skip_iv;
+		for (i = 0; i < crypt_req_32.keylen; i++)
+			crypt_req.key[i] = crypt_req_32.key[i];
+		crypt_req.keylen = crypt_req_32.keylen;
+		for (i = 0; i < TEGRA_CRYPTO_IV_SIZE; i++)
+			crypt_req.iv[i] = crypt_req_32.iv[i];
+		crypt_req.ivlen = crypt_req_32.ivlen;
+		crypt_req.plaintext =
+			(u8 *)(void __user *)(__u64)(crypt_req_32.plaintext);
+		crypt_req.plaintext_sz = crypt_req_32.plaintext_sz;
+		crypt_req.result =
+			(u8 *)(void __user *)(__u64)(crypt_req_32.result);
+
+		ret = process_crypt_req(ctx, &crypt_req);
+		break;
+#endif
 
 	case TEGRA_CRYPTO_IOCTL_PROCESS_REQ:
 		ret = copy_from_user(&crypt_req, (void __user *)arg,
@@ -652,12 +685,30 @@ static long tegra_crypto_dev_ioctl(struct file *filp,
 		ret = process_crypt_req(ctx, &crypt_req);
 		break;
 
-	case TEGRA_CRYPTO_IOCTL_SET_SEED:
-		if (copy_from_user(&rng_req, (void __user *)arg,
-			sizeof(rng_req))) {
+#ifdef CONFIG_COMPAT
+	case TEGRA_CRYPTO_IOCTL_SET_SEED_32:
+		if (copy_from_user(&rng_req_32, (void __user *)arg,
+			sizeof(rng_req_32))) {
 			ret = -EFAULT;
 			pr_err("%s: copy_from_user fail(%d)\n", __func__, ret);
 			return ret;
+		}
+
+		for (i = 0; i < TEGRA_CRYPTO_RNG_SEED_SIZE; i++)
+			rng_req.seed[i] = rng_req_32.seed[i];
+		rng_req.type = rng_req_32.type;
+		/* fall through */
+#endif
+
+	case TEGRA_CRYPTO_IOCTL_SET_SEED:
+		if (ioctl_num == TEGRA_CRYPTO_IOCTL_SET_SEED) {
+			if (copy_from_user(&rng_req, (void __user *)arg,
+				sizeof(rng_req))) {
+				ret = -EFAULT;
+				pr_err("%s: copy_from_user fail(%d)\n",
+						__func__, ret);
+				return ret;
+			}
 		}
 
 		memcpy(ctx->seed, rng_req.seed, TEGRA_CRYPTO_RNG_SEED_SIZE);
@@ -670,12 +721,30 @@ static long tegra_crypto_dev_ioctl(struct file *filp,
 				crypto_rng_seedsize(ctx->rng));
 		break;
 
-	case TEGRA_CRYPTO_IOCTL_GET_RANDOM:
-		if (copy_from_user(&rng_req, (void __user *)arg,
-			sizeof(rng_req))) {
+#ifdef CONFIG_COMPAT
+	case TEGRA_CRYPTO_IOCTL_GET_RANDOM_32:
+		if (copy_from_user(&rng_req_32, (void __user *)arg,
+			sizeof(rng_req_32))) {
 			ret = -EFAULT;
 			pr_err("%s: copy_from_user fail(%d)\n", __func__, ret);
 			return ret;
+		}
+
+		rng_req.nbytes = rng_req_32.nbytes;
+		rng_req.type = rng_req_32.type;
+		rng_req.rdata = (u8 *)(void __user *)(__u64)rng_req_32.rdata;
+		/* fall through */
+#endif
+
+	case TEGRA_CRYPTO_IOCTL_GET_RANDOM:
+		if (ioctl_num == TEGRA_CRYPTO_IOCTL_GET_RANDOM) {
+			if (copy_from_user(&rng_req, (void __user *)arg,
+				sizeof(rng_req))) {
+				ret = -EFAULT;
+				pr_err("%s: copy_from_user fail(%d)\n",
+						__func__, ret);
+				return ret;
+			}
 		}
 
 		rng = kzalloc(rng_req.nbytes, GFP_KERNEL);
@@ -718,6 +787,26 @@ rng_out:
 			kfree(rng);
 		break;
 
+#ifdef CONFIG_COMPAT
+	case TEGRA_CRYPTO_IOCTL_GET_SHA_32:
+		ret = copy_from_user(&sha_req_32, (void __user *)arg,
+			sizeof(sha_req_32));
+
+		for (i = 0; i < sha_req_32.keylen; i++)
+			sha_req.key[i] = sha_req_32.key[i];
+		sha_req.keylen = sha_req_32.keylen;
+		sha_req.algo =
+		(unsigned char *)(void __user *)(__u64)(sha_req_32.algo);
+		sha_req.plaintext =
+		(unsigned char *)(void __user *)(__u64)(sha_req_32.plaintext);
+		sha_req.plaintext_sz = sha_req_32.plaintext_sz;
+		sha_req.result =
+		(unsigned char *)(void __user *)(__u64)(sha_req_32.result);
+
+		ret = tegra_crypto_sha(&sha_req);
+		break;
+#endif
+
 	case TEGRA_CRYPTO_IOCTL_GET_SHA:
 		if (tegra_get_chipid() != TEGRA_CHIPID_TEGRA2) {
 			if (copy_from_user(&sha_req, (void __user *)arg,
@@ -733,6 +822,32 @@ rng_out:
 			ret = -EINVAL;
 		}
 		break;
+
+#ifdef CONFIG_COMPAT
+	case TEGRA_CRYPTO_IOCTL_RSA_REQ_32:
+		if (copy_from_user(&rsa_req_32, (void __user *)arg,
+			sizeof(rsa_req_32))) {
+			ret = -EFAULT;
+			pr_err("%s: copy_from_user fail(%d)\n", __func__, ret);
+			return ret;
+		}
+
+		rsa_req.keylen = rsa_req_32.keylen;
+		rsa_req.algo = rsa_req_32.algo;
+		rsa_req.modlen = rsa_req_32.modlen;
+		rsa_req.pub_explen = rsa_req_32.pub_explen;
+		rsa_req.prv_explen = rsa_req_32.prv_explen;
+		rsa_req.key = (char *)(void __user *)(__u64)(rsa_req_32.key);
+		rsa_req.message =
+			(char *)(void __user *)(__u64)(rsa_req_32.message);
+		rsa_req.msg_len = rsa_req_32.msg_len;
+		rsa_req.result =
+			(char *)(void __user *)(__u64)(rsa_req_32.result);
+		rsa_req.skip_key = rsa_req_32.skip_key;
+
+		ret = tegra_crypt_rsa(ctx, &rsa_req);
+		break;
+#endif
 
 	case TEGRA_CRYPTO_IOCTL_RSA_REQ:
 		if (copy_from_user(&rsa_req, (void __user *)arg,
@@ -758,6 +873,9 @@ const struct file_operations tegra_crypto_fops = {
 	.open = tegra_crypto_dev_open,
 	.release = tegra_crypto_dev_release,
 	.unlocked_ioctl = tegra_crypto_dev_ioctl,
+#ifdef CONFIG_COMPAT
+	.compat_ioctl =  tegra_crypto_dev_ioctl,
+#endif
 };
 
 struct miscdevice tegra_crypto_device = {

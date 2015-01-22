@@ -57,18 +57,25 @@
 
 #define HDMI_REKEY_DEFAULT		56
 
-#define HDMI_ELD_RESERVED1_INDEX		1
-#define HDMI_ELD_RESERVED2_INDEX		3
 #define HDMI_ELD_VER_INDEX			0
+#define HDMI_ELD_RESERVED1_INDEX		1
 #define HDMI_ELD_BASELINE_LEN_INDEX		2
+#define HDMI_ELD_RESERVED2_INDEX		3
 #define HDMI_ELD_CEA_VER_MNL_INDEX		4
 #define HDMI_ELD_SAD_CNT_CON_TYP_SAI_HDCP_INDEX		5
-#define HDMI_ELD_AUD_SYNC_DELAY_INDEX	6
+#define HDMI_ELD_AUD_SYNC_DELAY_INDEX		6
 #define HDMI_ELD_SPK_ALLOC_INDEX		7
-#define HDMI_ELD_PORT_ID_INDEX		8
-#define HDMI_ELD_MANF_NAME_INDEX		16
-#define HDMI_ELD_PRODUCT_CODE_INDEX		18
-#define HDMI_ELD_MONITOR_NAME_INDEX		20
+#define HDMI_ELD_PORT_ID_INDEX			8  /*  8 to 15  */
+#define HDMI_ELD_MANF_NAME_INDEX		16 /* 16 to 17 */
+#define HDMI_ELD_PRODUCT_CODE_INDEX		18 /* 18 to 19 */
+#define HDMI_ELD_MONITOR_NAME_INDEX		20 /* 20 to 20 + MNL - 1 */
+#define HDMI_ELD_BUF_SIZE			96
+
+/* According to HDA ELD spec, the maxmimum baseline
+ * eld size for tye 2 ELD_Ver encoding (which is
+ * what this code supports) is 80 bytes.
+ */
+#define MAX_BASELINE_ELD_SIZE			80
 
 /* These two values need to be cross checked in case of
      addition/removal from tegra_dc_hdmi_aspect_ratios[] */
@@ -137,7 +144,7 @@ const struct tmds_config tmds_config[] = {
 	.drive_current = 0x0f0f0f0f,
 	},
 };
-#elif defined(CONFIG_ARCH_TEGRA_11x_SOC) || defined(CONFIG_ARCH_TEGRA_12x_SOC)
+#elif defined(CONFIG_ARCH_TEGRA_11x_SOC)
 const struct tmds_config tmds_config[] = {
 	{ /* 480p/576p / 25.2MHz/27MHz modes */
 	.pclk = 27000000,
@@ -180,6 +187,58 @@ const struct tmds_config tmds_config[] = {
 	.pll1 = SOR_PLL_LOADADJ(3) | SOR_PLL_TMDS_TERMADJ(6)
 		| SOR_PLL_TMDS_TERM_ENABLE,
 	*/
+	},
+};
+#elif defined(CONFIG_ARCH_TEGRA_12x_SOC)
+const struct tmds_config tmds_config[] = {
+	{ /* 480p/576p / 25.2MHz/27MHz modes */
+	.version = MKDEV(1, 0),
+	.pclk = 27000000,
+	.pll0 = SOR_PLL_ICHPMP(1) | SOR_PLL_BG_V17_S(3) |
+		SOR_PLL_VCOCAP(0) | SOR_PLL_RESISTORSEL_EXT,
+	.pll1 = SOR_PLL_LOADADJ(3) | SOR_PLL_TMDS_TERMADJ(0),
+	.pe_current = 0x00000000,
+	.drive_current = 0x1a1a1a1a,
+	.peak_current = 0x00000000,
+	.pad_ctls0_mask    = 0xfffff0ff,
+	.pad_ctls0_setting = 0x00000400, /* BG_VREF_LEVEL */
+	},
+	{ /* 720p / 74.25MHz modes */
+	.version = MKDEV(1, 0),
+	.pclk = 74250000,
+	.pll0 = SOR_PLL_ICHPMP(1) | SOR_PLL_BG_V17_S(3) |
+		SOR_PLL_VCOCAP(1) | SOR_PLL_RESISTORSEL_EXT,
+	.pll1 = SOR_PLL_PE_EN | SOR_PLL_LOADADJ(3) | SOR_PLL_TMDS_TERMADJ(0),
+	.pe_current = 0x0f0f0f0f,
+	.drive_current = 0x1a1a1a1a,
+	.peak_current = 0x00000000,
+	.pad_ctls0_mask    = 0xfffff0ff,
+	.pad_ctls0_setting = 0x00000400, /* BG_VREF_LEVEL */
+	},
+	{ /* 1080p / 148.5MHz modes */
+	.version = MKDEV(1, 0),
+	.pclk = 148500000,
+	.pll0 = SOR_PLL_ICHPMP(1) | SOR_PLL_BG_V17_S(3) |
+		SOR_PLL_VCOCAP(3) | SOR_PLL_RESISTORSEL_EXT,
+	.pll1 = SOR_PLL_PE_EN | SOR_PLL_LOADADJ(3) | SOR_PLL_TMDS_TERMADJ(0),
+	.pe_current = 0x0a0a0a0a,
+	.drive_current = 0x1f1f1f1f,
+	.peak_current = 0x00000000,
+	.pad_ctls0_mask    = 0xfffff0ff,
+	.pad_ctls0_setting = 0x00000400, /* BG_VREF_LEVEL */
+	},
+	{ /* 225/297MHz modes */
+	.version = MKDEV(1, 0),
+	.pclk = INT_MAX,
+	.pll0 = SOR_PLL_ICHPMP(1) | SOR_PLL_BG_V17_S(3) |
+		SOR_PLL_VCOCAP(0xf) | SOR_PLL_RESISTORSEL_EXT,
+	.pll1 = SOR_PLL_LOADADJ(3) | SOR_PLL_TMDS_TERMADJ(7)
+		| SOR_PLL_TMDS_TERM_ENABLE,
+	.pe_current = 0x00000000,
+	.drive_current = 0x303f3f3f, /* lane3 needs a slightly lower current */
+	.peak_current = 0x040f0f0f,
+	.pad_ctls0_mask    = 0xfffff0ff,
+	.pad_ctls0_setting = 0x00000600, /* BG_VREF_LEVEL */
 	},
 };
 #elif defined(CONFIG_ARCH_TEGRA_14x_SOC)
@@ -357,6 +416,24 @@ void tegra_hdmi_writel(struct tegra_dc_hdmi_data *hdmi,
 {
 	trace_display_writel(hdmi->dc, val, hdmi->base + reg * 4);
 	writel(val, hdmi->base + reg * 4);
+}
+
+static inline int tegra_hdmi_writel_eld_buf(struct tegra_dc_hdmi_data *hdmi,
+					    const u8 *buf,
+					    size_t buf_entries, size_t index,
+					    void __iomem *eld_buf_addr)
+{
+	size_t end_index = index + buf_entries;
+	do {
+		unsigned long val = (index << 8) | *buf;
+
+		trace_display_writel(hdmi->dc, val, eld_buf_addr);
+		writel(val, eld_buf_addr);
+		index++;
+		buf++;
+	} while (index < end_index);
+	/* outer for loop that uses this will increment index by 1 */
+	return index - 1;
 }
 
 static inline void tegra_hdmi_clrsetbits(struct tegra_dc_hdmi_data *hdmi,
@@ -540,9 +617,25 @@ static int dbg_hdmi_show(struct seq_file *m, void *unused)
 	DUMP_REG(HDMI_NV_PDISP_KEY_HDCP_KEY_3);
 	DUMP_REG(HDMI_NV_PDISP_KEY_HDCP_KEY_TRIG);
 	DUMP_REG(HDMI_NV_PDISP_KEY_SKEY_INDEX);
-#if defined(CONFIG_ARCH_TEGRA_11x_SOC)
+#if !defined(CONFIG_ARCH_TEGRA_3x_SOC)
 	DUMP_REG(HDMI_NV_PDISP_SOR_IO_PEAK_CURRENT);
 #endif
+#if !defined(CONFIG_ARCH_TEGRA_3x_SOC) && !defined(CONFIG_ARCH_TEGRA_11x_SOC)
+	DUMP_REG(HDMI_NV_PDISP_SOR_PAD_CTLS0);
+	DUMP_REG(HDMI_NV_PDISP_SOR_PAD_CTLS1);
+	DUMP_REG(HDMI_NV_PDISP_HDMI_VSI_INFOFRAME_CTRL);
+	DUMP_REG(HDMI_NV_PDISP_HDMI_VSI_INFOFRAME_STATUS);
+	DUMP_REG(HDMI_NV_PDISP_HDMI_VSI_INFOFRAME_HEADER);
+	DUMP_REG(HDMI_NV_PDISP_HDMI_VSI_INFOFRAME_SUBPACK0_LOW);
+	DUMP_REG(HDMI_NV_PDISP_HDMI_VSI_INFOFRAME_SUBPACK0_HIGH);
+	DUMP_REG(HDMI_NV_PDISP_HDMI_VSI_INFOFRAME_SUBPACK1_LOW);
+	DUMP_REG(HDMI_NV_PDISP_HDMI_VSI_INFOFRAME_SUBPACK1_HIGH);
+	DUMP_REG(HDMI_NV_PDISP_HDMI_VSI_INFOFRAME_SUBPACK2_LOW);
+	DUMP_REG(HDMI_NV_PDISP_HDMI_VSI_INFOFRAME_SUBPACK2_HIGH);
+	DUMP_REG(HDMI_NV_PDISP_HDMI_VSI_INFOFRAME_SUBPACK3_LOW);
+	DUMP_REG(HDMI_NV_PDISP_HDMI_VSI_INFOFRAME_SUBPACK3_HIGH);
+#endif
+
 #undef DUMP_REG
 
 	clk_disable_unprepare(hdmi->clk);
@@ -769,10 +862,10 @@ bool tegra_dc_hdmi_mode_filter(const struct tegra_dc *dc,
 /* used by tegra_dc_probe() to detect hpd/hdmi status at boot */
 static bool tegra_dc_hdmi_detect(struct tegra_dc *dc)
 {
+	/* trigger an edid read by the hdmi state machine */
 	hdmi_state_machine_set_pending_hpd();
-	/* result isn't used by dc */
 
-	return true;
+	return tegra_dc_hpd(dc);
 }
 
 static irqreturn_t tegra_dc_hdmi_irq(int irq, void *ptr)
@@ -1006,7 +1099,7 @@ static int tegra_dc_hdmi_init(struct tegra_dc *dc)
 
 #ifdef CONFIG_TEGRA_NVHDCP
 	hdmi->nvhdcp = tegra_nvhdcp_create(hdmi, dc->ndev->id,
-			dc->out->dcc_bus);
+			dc->out->ddc_bus);
 	if (IS_ERR_OR_NULL(hdmi->nvhdcp)) {
 		dev_err(&dc->ndev->dev, "hdmi: can't create nvhdcp\n");
 		err = PTR_ERR(hdmi->nvhdcp);
@@ -1024,7 +1117,7 @@ static int tegra_dc_hdmi_init(struct tegra_dc *dc)
 	hdmi->disp1_clk = disp1_clk;
 	hdmi->disp2_clk = disp2_clk;
 	hdmi->suspended = false;
-	hdmi->eld_retrieved= false;
+	hdmi->eld_retrieved = false;
 	hdmi->clk_enabled = false;
 	hdmi->audio_freq = 44100;
 	hdmi->audio_source = AUTO;
@@ -1187,27 +1280,58 @@ static void tegra_dc_hdmi_setup_audio_fs_tables(struct tegra_dc *dc)
 #if !defined(CONFIG_ARCH_TEGRA_2x_SOC)
 static void tegra_dc_hdmi_setup_eld_buff(struct tegra_dc *dc)
 {
-	int i;
-	int j;
+	size_t i;
 	u8 tmp;
-
 	struct tegra_dc_hdmi_data *hdmi = tegra_dc_get_outdata(dc);
+	void __iomem *eld_buf_addr;
+	int baseline_eld_len = (HDMI_ELD_MONITOR_NAME_INDEX -
+				HDMI_ELD_CEA_VER_MNL_INDEX +
+				hdmi->eld.mnl +
+				(3 * hdmi->eld.sad_count));
+	u8 baseline_eld_len_val;
 
-	/* program ELD stuff */
-	for (i = 0; i < HDMI_ELD_MONITOR_NAME_INDEX; i++) {
+	eld_buf_addr = hdmi->base + HDMI_NV_PDISP_SOR_AUDIO_HDA_ELD_BUFWR_0 * 4;
+
+	/* the baseline_eld_len needs to be written as a
+	 * multiple of DWORDS (4 bytes).
+	 */
+	BUG_ON(baseline_eld_len > MAX_BASELINE_ELD_SIZE);
+	baseline_eld_len_val = DIV_ROUND_UP(baseline_eld_len, 4);
+
+	/* program ELD stuff.  we must write all bytes of the
+	 * ELD buffer.  when hda_eld.c tries to read it back,
+	 * it's query of the size returns not how many valid
+	 * were written, but the entire size, and will try to
+	 * read all the bytes in the buffer.  it will fail
+	 * if any invalid bytes are read back, so we have to
+	 * fill the entire buffer with something, even if it's
+	 * just zeroes.
+	 */
+	for (i = 0; i < HDMI_ELD_BUF_SIZE; i++) {
 		switch (i) {
 		case HDMI_ELD_VER_INDEX:
 			tmp = (hdmi->eld.eld_ver << 3);
 			tegra_hdmi_writel(hdmi, (i << 8) | tmp,
 				  HDMI_NV_PDISP_SOR_AUDIO_HDA_ELD_BUFWR_0);
 			break;
+		case HDMI_ELD_RESERVED1_INDEX:
+		case HDMI_ELD_RESERVED2_INDEX:
+			/* must write a dummy byte or else hda_eld.c
+			 * will get an error when it tries to read a
+			 * complete eld buffer
+			 */
+			tegra_hdmi_writel(hdmi, (i << 8),
+				  HDMI_NV_PDISP_SOR_AUDIO_HDA_ELD_BUFWR_0);
+			break;
 		case HDMI_ELD_BASELINE_LEN_INDEX:
+			tegra_hdmi_writel(hdmi, (i << 8) | baseline_eld_len_val,
+				  HDMI_NV_PDISP_SOR_AUDIO_HDA_ELD_BUFWR_0);
 			break;
 		case HDMI_ELD_CEA_VER_MNL_INDEX:
 			tmp = (hdmi->eld.cea_edid_ver << 5);
 			tmp |= (hdmi->eld.mnl & 0x1f);
 			tegra_hdmi_writel(hdmi, (i << 8) | tmp,
-					  HDMI_NV_PDISP_SOR_AUDIO_HDA_ELD_BUFWR_0);
+				  HDMI_NV_PDISP_SOR_AUDIO_HDA_ELD_BUFWR_0);
 			break;
 		case HDMI_ELD_SAD_CNT_CON_TYP_SAI_HDCP_INDEX:
 			tmp = (hdmi->eld.sad_count << 4);
@@ -1226,36 +1350,38 @@ static void tegra_dc_hdmi_setup_eld_buff(struct tegra_dc *dc)
 					  HDMI_NV_PDISP_SOR_AUDIO_HDA_ELD_BUFWR_0);
 			break;
 		case HDMI_ELD_PORT_ID_INDEX:
-			for (j = 0; j < 8;j++) {
-				tegra_hdmi_writel(hdmi, ((i +j) << 8) | (hdmi->eld.port_id[j]),
-					  HDMI_NV_PDISP_SOR_AUDIO_HDA_ELD_BUFWR_0);
-			}
+			i = tegra_hdmi_writel_eld_buf(hdmi, hdmi->eld.port_id,
+						      8, i, eld_buf_addr);
 			break;
 		case HDMI_ELD_MANF_NAME_INDEX:
-			for (j = 0; j < 2;j++) {
-				tegra_hdmi_writel(hdmi, ((i +j) << 8) | (hdmi->eld.manufacture_id[j]),
-					  HDMI_NV_PDISP_SOR_AUDIO_HDA_ELD_BUFWR_0);
-			}
+			i = tegra_hdmi_writel_eld_buf(hdmi,
+						      hdmi->eld.manufacture_id,
+						      2, i, eld_buf_addr);
 			break;
 		case HDMI_ELD_PRODUCT_CODE_INDEX:
-			for (j = 0; j < 2;j++) {
-				tegra_hdmi_writel(hdmi, ((i +j) << 8) | (hdmi->eld.product_id[j]),
-					  HDMI_NV_PDISP_SOR_AUDIO_HDA_ELD_BUFWR_0);
-			}
+			i = tegra_hdmi_writel_eld_buf(hdmi,
+						      hdmi->eld.product_id,
+						      2, i, eld_buf_addr);
 			break;
+		case HDMI_ELD_MONITOR_NAME_INDEX:
+			/* write the eld.mnl bytes of the monitor name,
+			 * followed immediately the short audio descriptor bytes
+			 */
+			i = tegra_hdmi_writel_eld_buf(hdmi,
+						      hdmi->eld.monitor_name,
+						      hdmi->eld.mnl, i,
+						      eld_buf_addr) + 1;
+			i = tegra_hdmi_writel_eld_buf(hdmi, hdmi->eld.sad,
+						      hdmi->eld.sad_count * 3,
+						      i, eld_buf_addr);
+			break;
+		default:
+			tegra_hdmi_writel(hdmi, (i << 8),
+				  HDMI_NV_PDISP_SOR_AUDIO_HDA_ELD_BUFWR_0);
 		}
 	}
-	for (j = 0; j < hdmi->eld.mnl;j++) {
-		tegra_hdmi_writel(hdmi, ((j + HDMI_ELD_MONITOR_NAME_INDEX) << 8) |
-				  (hdmi->eld.monitor_name[j]),
-				  HDMI_NV_PDISP_SOR_AUDIO_HDA_ELD_BUFWR_0);
-	}
-	for (j = 0; j < hdmi->eld.sad_count;j++) {
-		tegra_hdmi_writel(hdmi, ((j + HDMI_ELD_MONITOR_NAME_INDEX + hdmi->eld.mnl) << 8) |
-				  (hdmi->eld.sad[j]),
-				  HDMI_NV_PDISP_SOR_AUDIO_HDA_ELD_BUFWR_0);
-	}
-		/* set presence andvalid bit  */
+
+	/* set presence and valid bit  */
 	tegra_hdmi_writel(hdmi, 3, HDMI_NV_PDISP_SOR_AUDIO_HDA_PRESENSE_0);
 }
 #endif
@@ -1373,8 +1499,11 @@ int tegra_hdmi_setup_audio_freq_source(unsigned audio_freq, unsigned audio_sourc
 		AUDIO_FREQ_176_4K== audio_freq ||
 		AUDIO_FREQ_192K== audio_freq) {
 		/* If we can program HDMI, then proceed */
-		if (hdmi->clk_enabled)
+		if (hdmi->clk_enabled) {
+			tegra_dc_io_start(hdmi->dc);
 			tegra_dc_hdmi_setup_audio(hdmi->dc, audio_freq,audio_source);
+			tegra_dc_io_end(hdmi->dc);
+		}
 
 		/* Store it for using it in enable */
 		hdmi->audio_freq = audio_freq;
@@ -1609,6 +1738,7 @@ static void tegra_dc_hdmi_setup_avi_infoframe(struct tegra_dc *dc, bool dvi)
 	if (tegra_edid_underscan_supported(hdmi->edid))
 		avi.s = HDMI_AVI_S_UNDERSCAN;
 	dev_dbg(&dc->ndev->dev, "HDMI AVI vic=%d m=%d\n", avi.vic, avi.m);
+	avi.s = HDMI_AVI_S_UNDERSCAN;
 
 	tegra_dc_hdmi_write_infopack(dc, HDMI_NV_PDISP_HDMI_AVI_INFOFRAME_HEADER,
 				     HDMI_INFOFRAME_TYPE_AVI,
@@ -1692,6 +1822,10 @@ static void tegra_dc_hdmi_setup_tmds(struct tegra_dc_hdmi_data *hdmi,
 		HDMI_NV_PDISP_SOR_LANE_DRIVE_CURRENT);
 	val = tegra_hdmi_readl(hdmi, HDMI_NV_PDISP_SOR_PAD_CTLS0);
 	val |= DRIVE_CURRENT_FUSE_OVERRIDE_T11x;
+	if (MAJOR(tc->version) >= 1) {
+		val &= tc->pad_ctls0_mask;
+		val |= tc->pad_ctls0_setting;
+	}
 	tegra_hdmi_writel(hdmi, val, HDMI_NV_PDISP_SOR_PAD_CTLS0);
 
 	tegra_hdmi_writel(hdmi, tc->peak_current,
@@ -1709,23 +1843,68 @@ static void tegra_dc_hdmi_setup_tmds(struct tegra_dc_hdmi_data *hdmi,
 #endif
 }
 
+void tegra_dc_hdmi_setup_audio_and_infoframes(struct tegra_dc *dc)
+{
+	int rekey;
+	int err;
+	u32 val;
+	struct tegra_dc_hdmi_data *hdmi = tegra_dc_get_outdata(dc);
+
+	if (!hdmi->dvi) {
+		err = tegra_dc_hdmi_setup_audio(dc, hdmi->audio_freq,
+			hdmi->audio_source);
+
+		if (err < 0)
+			hdmi->dvi = true;
+	}
+
+#if !defined(CONFIG_ARCH_TEGRA_2x_SOC)
+	tegra_dc_hdmi_setup_eld_buff(dc);
+#endif
+
+	rekey = HDMI_REKEY_DEFAULT;
+	val = HDMI_CTRL_REKEY(rekey);
+	val |= HDMI_CTRL_MAX_AC_PACKET((dc->mode.h_sync_width +
+					dc->mode.h_back_porch +
+					dc->mode.h_front_porch -
+					rekey - 18) / 32);
+	if (!hdmi->dvi)
+		val |= HDMI_CTRL_ENABLE;
+	tegra_hdmi_writel(hdmi, val, HDMI_NV_PDISP_HDMI_CTRL);
+
+	if (hdmi->dvi)
+		tegra_hdmi_writel(hdmi, 0x0,
+				  HDMI_NV_PDISP_HDMI_GENERIC_CTRL);
+	else
+		tegra_hdmi_writel(hdmi, GENERIC_CTRL_AUDIO,
+				  HDMI_NV_PDISP_HDMI_GENERIC_CTRL);
+
+	tegra_dc_hdmi_setup_avi_infoframe(dc, hdmi->dvi);
+
+	if (dc->mode.stereo_mode)
+		tegra_dc_hdmi_setup_stereo_infoframe(dc);
+	else if (!tegra_dc_hdmi_setup_hdmi_vic_infoframe(dc, hdmi->dvi))
+		tegra_dc_hdmi_disable_generic_infoframe(dc);
+
+	tegra_dc_hdmi_setup_audio_infoframe(dc, hdmi->dvi);
+}
+
 static void tegra_dc_hdmi_enable(struct tegra_dc *dc)
 {
 	struct tegra_dc_hdmi_data *hdmi = tegra_dc_get_outdata(dc);
 	int pulse_start;
 	int dispclk_div_8_2;
 	int retries;
-	int rekey;
-	int err;
 	unsigned long val;
 	unsigned i;
 	const struct tmds_config *tmds_ptr;
 	size_t tmds_len;
+	bool edid_read;
 
 	/* enable power, clocks, resets, etc. */
 
 	/* The upstream DC needs to be clocked for accesses to HDMI to not
-	 * hard lock the system.  Because we don't know if HDMI is conencted
+	 * hard lock the system.  Because we don't know if HDMI is connected
 	 * to disp1 or disp2 we need to enable both until we set the DC mux.
 	 */
 	clk_prepare_enable(hdmi->disp1_clk);
@@ -1738,13 +1917,23 @@ static void tegra_dc_hdmi_enable(struct tegra_dc *dc)
 	clk_prepare_enable(hdmi->hda2hdmi_clk);
 #endif
 
-	tegra_dc_setup_clk(dc, hdmi->clk);
-	clk_set_rate(hdmi->clk, dc->mode.pclk);
+	/* Reseting HDMI clock would cause visible display reset during boot
+	 * if bootloader set an image already. Skip such operation if HDMI
+	 * is already running on desired clock rate.
+	 */
+	if (clk_get_rate(hdmi->clk) == dc->mode.pclk) {
+		pr_info("%s: HDMI clock already configured to "
+			"target frequency, skipping clk setup.\n", __func__);
+		clk_prepare_enable(hdmi->clk);
+	} else {
+		tegra_dc_setup_clk(dc, hdmi->clk);
+		clk_set_rate(hdmi->clk, dc->mode.pclk);
 
-	clk_prepare_enable(hdmi->clk);
-	tegra_periph_reset_assert(hdmi->clk);
-	mdelay(1);
-	tegra_periph_reset_deassert(hdmi->clk);
+		clk_prepare_enable(hdmi->clk);
+		tegra_periph_reset_assert(hdmi->clk);
+		mdelay(1);
+		tegra_periph_reset_deassert(hdmi->clk);
+	}
 
 	/* TODO: copy HDCP keys from KFUSE to HDMI */
 
@@ -1800,44 +1989,19 @@ static void tegra_dc_hdmi_enable(struct tegra_dc *dc)
 
 	hdmi->clk_enabled = true;
 
-	if (!hdmi->dvi) {
-		err = tegra_dc_hdmi_setup_audio(dc, hdmi->audio_freq,
-			hdmi->audio_source);
-
-		if (err < 0)
-			hdmi->dvi = true;
+	edid_read = hdmi->eld_retrieved;
+	/* on first boot, we haven't read EDID yet so
+	 * we don't know what to setup yet.  we'll
+	 * call audio and infoframes setup in hdmi worker
+	 * after EDID has been read.
+	 */
+	if (edid_read) {
+		/* after boot, this is called by hwc via ioctl
+		 * blank/unblank, which is done after EDID has
+		 * been read.
+		 */
+		tegra_dc_hdmi_setup_audio_and_infoframes(dc);
 	}
-
-#if !defined(CONFIG_ARCH_TEGRA_2x_SOC)
-	if (hdmi->eld_retrieved)
-		tegra_dc_hdmi_setup_eld_buff(dc);
-#endif
-
-	rekey = HDMI_REKEY_DEFAULT;
-	val = HDMI_CTRL_REKEY(rekey);
-	val |= HDMI_CTRL_MAX_AC_PACKET((dc->mode.h_sync_width +
-					dc->mode.h_back_porch +
-					dc->mode.h_front_porch -
-					rekey - 18) / 32);
-	if (!hdmi->dvi)
-		val |= HDMI_CTRL_ENABLE;
-	tegra_hdmi_writel(hdmi, val, HDMI_NV_PDISP_HDMI_CTRL);
-
-	if (hdmi->dvi)
-		tegra_hdmi_writel(hdmi, 0x0,
-				  HDMI_NV_PDISP_HDMI_GENERIC_CTRL);
-	else
-		tegra_hdmi_writel(hdmi, GENERIC_CTRL_AUDIO,
-				  HDMI_NV_PDISP_HDMI_GENERIC_CTRL);
-
-	tegra_dc_hdmi_setup_avi_infoframe(dc, hdmi->dvi);
-
-	if (dc->mode.stereo_mode)
-		tegra_dc_hdmi_setup_stereo_infoframe(dc);
-	else if (!tegra_dc_hdmi_setup_hdmi_vic_infoframe(dc, hdmi->dvi))
-		tegra_dc_hdmi_disable_generic_infoframe(dc);
-
-	tegra_dc_hdmi_setup_audio_infoframe(dc, hdmi->dvi);
 
 	/* Set tmds config. Set it to custom values provided in board file;
 	 * otherwise, set it to default values. */
@@ -1860,6 +2024,7 @@ static void tegra_dc_hdmi_enable(struct tegra_dc *dc)
 		tegra_dc_hdmi_setup_tmds(hdmi, &tmds_ptr[tmds_len - 1]);
 	}
 
+	/* enable SOR */
 	tegra_hdmi_writel(hdmi,
 			  SOR_SEQ_CTL_PU_PC(0) |
 			  SOR_SEQ_PU_PC_ALT(0) |
@@ -1882,11 +2047,18 @@ static void tegra_dc_hdmi_enable(struct tegra_dc *dc)
 	val |= SOR_CSTM_ROTCLK(2);
 	tegra_hdmi_writel(hdmi, val, HDMI_NV_PDISP_SOR_CSTM);
 
-
-	tegra_dc_writel(dc, DISP_CTRL_MODE_STOP, DC_CMD_DISPLAY_COMMAND);
-	tegra_dc_writel(dc, GENERAL_ACT_REQ << 8, DC_CMD_STATE_CONTROL);
-	tegra_dc_writel(dc, GENERAL_ACT_REQ, DC_CMD_STATE_CONTROL);
-
+	/* Putting display into STOP MODE will reset display which is undesired
+	 * if bootloader has already initialized display with image.
+	 */
+	if (!hdmi->dc->initialized) {
+		tegra_dc_writel(dc, DISP_CTRL_MODE_STOP,
+				DC_CMD_DISPLAY_COMMAND);
+		tegra_dc_writel(dc, GENERAL_UPDATE, DC_CMD_STATE_CONTROL);
+		tegra_dc_writel(dc, GENERAL_ACT_REQ, DC_CMD_STATE_CONTROL);
+	} else {
+		pr_info("%s: DC already initialized, skip putting HDMI "
+			"to STOP mode.\n", __func__);
+	}
 
 	/* start SOR */
 	tegra_hdmi_writel(hdmi,
@@ -1942,16 +2114,28 @@ static void tegra_dc_hdmi_enable(struct tegra_dc *dc)
 			DC_CMD_DISPLAY_POWER_CONTROL);
 
 	tegra_dc_writel(dc, DISP_CTRL_MODE_C_DISPLAY, DC_CMD_DISPLAY_COMMAND);
-	tegra_dc_writel(dc, GENERAL_ACT_REQ << 8, DC_CMD_STATE_CONTROL);
+	tegra_dc_writel(dc, GENERAL_UPDATE, DC_CMD_STATE_CONTROL);
 	tegra_dc_writel(dc, GENERAL_ACT_REQ, DC_CMD_STATE_CONTROL);
 
-	tegra_nvhdcp_set_plug(hdmi->nvhdcp, 1);
+	/* we are called at boot when the actual connection state
+	 * isn't known, and other times (like fb_blank, which
+	 * does a disable followed by an enable) when it is.
+	 * don't just assume a connection but check hpd.
+	 */
+	tegra_nvhdcp_set_plug(hdmi->nvhdcp, tegra_dc_hpd(dc));
 	tegra_dc_io_end(dc);
 }
 
 static void tegra_dc_hdmi_disable(struct tegra_dc *dc)
 {
 	struct tegra_dc_hdmi_data *hdmi = tegra_dc_get_outdata(dc);
+
+	/*
+	 * set DC to STOP mode
+	 */
+	tegra_dc_writel(dc, DISP_CTRL_MODE_STOP, DC_CMD_DISPLAY_COMMAND);
+	tegra_dc_writel(dc, GENERAL_UPDATE, DC_CMD_STATE_CONTROL);
+	tegra_dc_writel(dc, GENERAL_ACT_REQ, DC_CMD_STATE_CONTROL);
 
 	tegra_nvhdcp_set_plug(hdmi->nvhdcp, 0);
 

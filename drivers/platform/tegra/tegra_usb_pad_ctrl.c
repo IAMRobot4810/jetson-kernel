@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2013, NVIDIA CORPORATION.  All rights reserved.
+ * Copyright (c) 2013-2014, NVIDIA CORPORATION.  All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 2 as
@@ -142,15 +142,11 @@ void tegra_xhci_ss_wake_signal(u32 portmap, bool enable)
 	/* Assert/Deassert clamp_en_early signals to SSP0/1 */
 	elpg_program0 = readl(pad_base + XUSB_PADCTL_ELPG_PROGRAM_0);
 	if (enable) {
-		if (portmap & TEGRA_XUSB_SS_P0)
-			elpg_program0 |= SSP0_ELPG_CLAMP_EN_EARLY;
-		if (portmap & TEGRA_XUSB_SS_P1)
-			elpg_program0 |= SSP1_ELPG_CLAMP_EN_EARLY;
+		elpg_program0 |= SSP0_ELPG_CLAMP_EN_EARLY;
+		elpg_program0 |= SSP1_ELPG_CLAMP_EN_EARLY;
 	} else {
-		if (portmap & TEGRA_XUSB_SS_P0)
-			elpg_program0 &= ~SSP0_ELPG_CLAMP_EN_EARLY;
-		if (portmap & TEGRA_XUSB_SS_P1)
-			elpg_program0 &= ~SSP1_ELPG_CLAMP_EN_EARLY;
+		elpg_program0 &= ~SSP0_ELPG_CLAMP_EN_EARLY;
+		elpg_program0 &= ~SSP1_ELPG_CLAMP_EN_EARLY;
 	}
 	writel(elpg_program0, pad_base + XUSB_PADCTL_ELPG_PROGRAM_0);
 
@@ -164,15 +160,11 @@ void tegra_xhci_ss_wake_signal(u32 portmap, bool enable)
 	elpg_program0 = readl(pad_base + XUSB_PADCTL_ELPG_PROGRAM_0);
 
 	if (enable) {
-		if (portmap & TEGRA_XUSB_SS_P0)
-			elpg_program0 |= SSP0_ELPG_CLAMP_EN;
-		if (portmap & TEGRA_XUSB_SS_P1)
-			elpg_program0 |= SSP1_ELPG_CLAMP_EN;
+		elpg_program0 |= SSP0_ELPG_CLAMP_EN;
+		elpg_program0 |= SSP1_ELPG_CLAMP_EN;
 	} else {
-		if (portmap & TEGRA_XUSB_SS_P0)
-			elpg_program0 &= ~SSP0_ELPG_CLAMP_EN;
-		if (portmap & TEGRA_XUSB_SS_P1)
-			elpg_program0 &= ~SSP1_ELPG_CLAMP_EN;
+		elpg_program0 &= ~SSP0_ELPG_CLAMP_EN;
+		elpg_program0 &= ~SSP1_ELPG_CLAMP_EN;
 	}
 
 	writel(elpg_program0, pad_base + XUSB_PADCTL_ELPG_PROGRAM_0);
@@ -195,15 +187,11 @@ void tegra_xhci_ss_vcore(u32 portmap, bool enable)
 	elpg_program0 = readl(pad_base + XUSB_PADCTL_ELPG_PROGRAM_0);
 
 	if (enable) {
-		if (portmap & TEGRA_XUSB_SS_P0)
-			elpg_program0 |= SSP0_ELPG_VCORE_DOWN;
-		if (portmap & TEGRA_XUSB_SS_P1)
-			elpg_program0 |= SSP1_ELPG_VCORE_DOWN;
+		elpg_program0 |= SSP0_ELPG_VCORE_DOWN;
+		elpg_program0 |= SSP1_ELPG_VCORE_DOWN;
 	} else {
-		if (portmap & TEGRA_XUSB_SS_P0)
-			elpg_program0 &= ~SSP0_ELPG_VCORE_DOWN;
-		if (portmap & TEGRA_XUSB_SS_P1)
-			elpg_program0 &= ~SSP1_ELPG_VCORE_DOWN;
+		elpg_program0 &= ~SSP0_ELPG_VCORE_DOWN;
+		elpg_program0 &= ~SSP1_ELPG_VCORE_DOWN;
 	}
 	writel(elpg_program0, pad_base + XUSB_PADCTL_ELPG_PROGRAM_0);
 	spin_unlock_irqrestore(&xusb_padctl_lock, flags);
@@ -247,7 +235,7 @@ int utmi_phy_pad_enable(void)
 
 	val = readl(pad_base + UTMIP_BIAS_CFG0);
 	val &= ~(UTMIP_OTGPD | UTMIP_BIASPD);
-	val |= UTMIP_HSSQUELCH_LEVEL(0x2) | UTMIP_HSDISCON_LEVEL(0x1) |
+	val |= UTMIP_HSSQUELCH_LEVEL(0x2) | UTMIP_HSDISCON_LEVEL(0x3) |
 		UTMIP_HSDISCON_LEVEL_MSB;
 	writel(val, pad_base + UTMIP_BIAS_CFG0);
 
@@ -457,7 +445,13 @@ static int tegra_xusb_padctl_phy_enable(void)
 		XUSB_PADCTL_IOPHY_PLL_P0_CTL2_TXCLKREF_EN |
 		XUSB_PADCTL_IOPHY_PLL_P0_CTL2_TXCLKREF_SEL);
 	writel(val, pad_base + XUSB_PADCTL_IOPHY_PLL_P0_CTL2_0);
-
+#ifdef CONFIG_ARCH_TEGRA_13x_SOC
+	/* recommended prod setting */
+	val = readl(pad_base + XUSB_PADCTL_IOPHY_PLL_P0_CTL2_0);
+	val &= ~XUSB_PADCTL_IOPHY_PLL_P0_CTL2_PLL0_CP_CNTL_MASK;
+	val |= XUSB_PADCTL_IOPHY_PLL_P0_CTL2_PLL0_CP_CNTL_VAL;
+	writel(val, pad_base + XUSB_PADCTL_IOPHY_PLL_P0_CTL2_0);
+#endif
 	/* take PLL out of reset */
 	val = readl(pad_base + XUSB_PADCTL_IOPHY_PLL_P0_CTL1_0);
 	val |= XUSB_PADCTL_IOPHY_PLL_P0_CTL1_PLL_RST_;

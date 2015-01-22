@@ -28,33 +28,63 @@
 	_IOWR(TE_IOCTL_MAGIC_NUMBER, 0x11, union te_cmd)
 #define TE_IOCTL_LAUNCH_OPERATION \
 	_IOWR(TE_IOCTL_MAGIC_NUMBER, 0x14, union te_cmd)
-#define TE_IOCTL_FILE_NEW_REQ \
-	_IOR(TE_IOCTL_MAGIC_NUMBER,  0x16, struct te_file_req)
-#define TE_IOCTL_FILE_FILL_BUF \
-	_IOR(TE_IOCTL_MAGIC_NUMBER,  0x17, struct te_file_req)
-#define TE_IOCTL_FILE_REQ_COMPLETE \
-	_IOWR(TE_IOCTL_MAGIC_NUMBER, 0x18, struct te_file_req)
+
+/* ioctls using new structs (eventually to replace current ioctls) */
+#define TE_IOCTL_OPEN_CLIENT_SESSION_COMPAT \
+	_IOWR(TE_IOCTL_MAGIC_NUMBER, 0x10, union te_cmd_compat)
+#define TE_IOCTL_CLOSE_CLIENT_SESSION_COMPAT \
+	_IOWR(TE_IOCTL_MAGIC_NUMBER, 0x11, union te_cmd_compat)
+#define TE_IOCTL_LAUNCH_OPERATION_COMPAT \
+	_IOWR(TE_IOCTL_MAGIC_NUMBER, 0x14, union te_cmd_compat)
+
+#define TE_IOCTL_SS_NEW_REQ_LEGACY \
+	_IOR(TE_IOCTL_MAGIC_NUMBER,  0x20, struct te_ss_op_legacy)
+#define TE_IOCTL_SS_REQ_COMPLETE_LEGACY \
+	_IOWR(TE_IOCTL_MAGIC_NUMBER, 0x21, struct te_ss_op_legacy)
+
+/* ioctls using new SS structs (eventually to replace current SS ioctls) */
+#define TE_IOCTL_SS_NEW_REQ \
+	_IOR(TE_IOCTL_MAGIC_NUMBER,  0x20, struct te_ss_op)
+#define TE_IOCTL_SS_REQ_COMPLETE \
+	_IOWR(TE_IOCTL_MAGIC_NUMBER, 0x21, struct te_ss_op)
 
 #define TE_IOCTL_MIN_NR	_IOC_NR(TE_IOCTL_OPEN_CLIENT_SESSION)
-#define TE_IOCTL_MAX_NR	_IOC_NR(TE_IOCTL_FILE_REQ_COMPLETE)
+#define TE_IOCTL_MAX_NR	_IOC_NR(TE_IOCTL_SS_REQ_COMPLETE)
 
 /* shared buffer is 2 pages: 1st are requests, 2nd are params */
 #define TE_CMD_DESC_MAX	(PAGE_SIZE / sizeof(struct te_request))
 #define TE_PARAM_MAX	(PAGE_SIZE / sizeof(struct te_oper_param))
 
+#define TE_CMD_DESC_MAX_COMPAT \
+	(PAGE_SIZE / sizeof(struct te_request_compat))
+#define TE_PARAM_MAX_COMPAT \
+	(PAGE_SIZE / sizeof(struct te_oper_param_compat))
+
 #define MAX_EXT_SMC_ARGS	12
 
 extern struct mutex smc_lock;
+extern struct tlk_device tlk_dev;
 
-uint32_t tlk_generic_smc(uint32_t arg0, uint32_t arg1, uint32_t arg2);
-uint32_t tlk_extended_smc(uint32_t *args);
+uint32_t _tlk_generic_smc(uint32_t arg0, uintptr_t arg1, uintptr_t arg2);
+uint32_t tlk_generic_smc(uint32_t arg0, uintptr_t arg1, uintptr_t arg2);
+uint32_t _tlk_extended_smc(uintptr_t *args);
+uint32_t tlk_extended_smc(uintptr_t *args);
 void tlk_irq_handler(void);
+
+/* errors returned by secure world in reponse to SMC calls */
+enum {
+	TE_ERROR_PREEMPT_BY_IRQ = 0xFFFFFFFD,
+	TE_ERROR_PREEMPT_BY_FS = 0xFFFFFFFE,
+};
 
 struct tlk_device {
 	struct te_request *req_addr;
 	dma_addr_t req_addr_phys;
 	struct te_oper_param *param_addr;
 	dma_addr_t param_addr_phys;
+
+	struct te_request_compat *req_addr_compat;
+	struct te_oper_param_compat *param_addr_compat;
 
 	char *req_param_buf;
 
@@ -66,6 +96,11 @@ struct tlk_device {
 
 struct te_cmd_req_desc {
 	struct te_request *req_addr;
+	struct list_head list;
+};
+
+struct te_cmd_req_desc_compat {
+	struct te_request_compat *req_addr;
 	struct list_head list;
 };
 
@@ -88,14 +123,16 @@ enum {
 	TE_SMC_LAUNCH_OPERATION		= 0x30000003,
 
 	/* Trusted OS calls */
-	TE_SMC_REGISTER_FS_HANDLERS	= 0x32000001,
 	TE_SMC_REGISTER_REQ_BUF		= 0x32000002,
-	TE_SMC_PROGRAM_VPR		= 0x32000003,
 	TE_SMC_REGISTER_IRQ_HANDLER	= 0x32000004,
 	TE_SMC_NS_IRQ_DONE		= 0x32000005,
-	TE_SMC_FS_OP_DONE		= 0x32000006,
 	TE_SMC_INIT_LOGGER		= 0x32000007,
+	TE_SMC_SS_REGISTER_HANDLER_LEGACY	= 0x32000008,
+	TE_SMC_SS_REQ_COMPLETE		= 0x32000009,
+	TE_SMC_SS_REGISTER_HANDLER	= 0x32000010,
 
+	/* SIP (SOC specific) calls.  */
+	TE_SMC_PROGRAM_VPR		= 0x82000003,
 };
 
 enum {
@@ -119,6 +156,21 @@ struct te_oper_param {
 		} Mem;
 	} u;
 	void *next_ptr_user;
+};
+
+struct te_oper_param_compat {
+	uint32_t index;
+	uint32_t type;
+	union {
+		struct {
+			uint32_t val;
+		} Int;
+		struct {
+			uint64_t base;
+			uint32_t len;
+		} Mem;
+	} u;
+	uint64_t next_ptr_user;
 };
 
 struct te_operation {
@@ -170,11 +222,67 @@ union te_cmd {
 	struct te_launchop	launchop;
 };
 
+/*
+ * Compat versions of the original structs (eventually to replace
+ * the old structs, once the lib/TLK kernel changes are in).
+ */
+struct te_operation_compat {
+	uint32_t	command;
+	uint32_t	status;
+	uint64_t	list_head;
+	uint64_t	list_tail;
+	uint32_t	list_count;
+	uint32_t	interface_side;
+};
+
+/*
+ * OpenSession
+ */
+struct te_opensession_compat {
+	struct te_service_id		dest_uuid;
+	struct te_operation_compat	operation;
+	uint64_t			answer;
+};
+
+/*
+ * CloseSession
+ */
+struct te_closesession_compat {
+	uint32_t	session_id;
+	uint64_t	answer;
+};
+
+/*
+ * LaunchOperation
+ */
+struct te_launchop_compat {
+	uint32_t			session_id;
+	struct te_operation_compat	operation;
+	uint64_t			answer;
+};
+
+union te_cmd_compat {
+	struct te_opensession_compat	opensession;
+	struct te_closesession_compat	closesession;
+	struct te_launchop_compat	launchop;
+};
+
 struct te_request {
 	uint32_t		type;
 	uint32_t		session_id;
 	uint32_t		command_id;
 	struct te_oper_param	*params;
+	uint32_t		params_size;
+	uint32_t		dest_uuid[4];
+	uint32_t		result;
+	uint32_t		result_origin;
+};
+
+struct te_request_compat {
+	uint32_t		type;
+	uint32_t		session_id;
+	uint32_t		command_id;
+	uint64_t		params;
 	uint32_t		params_size;
 	uint32_t		dest_uuid[4];
 	uint32_t		result;
@@ -199,27 +307,35 @@ void te_launch_operation(struct te_launchop *cmd,
 	struct te_request *request,
 	struct tlk_context *context);
 
-#define TE_MAX_FILE_NAME_LEN	64
+void te_open_session_compat(struct te_opensession_compat *cmd,
+	struct te_request_compat *request,
+	struct tlk_context *context);
 
-enum te_file_req_type {
-	OTE_FILE_REQ_READ	= 0,
-	OTE_FILE_REQ_WRITE	= 1,
-	OTE_FILE_REQ_DELETE	= 2,
-	OTE_FILE_REQ_SIZE	= 3,
+void te_close_session_compat(struct te_closesession_compat *cmd,
+	struct te_request_compat *request,
+	struct tlk_context *context);
+
+void te_launch_operation_compat(struct te_launchop_compat *cmd,
+	struct te_request_compat *request,
+	struct tlk_context *context);
+
+#define SS_OP_MAX_DATA_SIZE	0x1000
+struct te_ss_op {
+	uint32_t	req_size;
+	uint8_t		data[SS_OP_MAX_DATA_SIZE];
 };
 
-struct te_file_req {
-	char name[TE_MAX_FILE_NAME_LEN];
-	enum te_file_req_type type;
-	void *user_data_buf;
-	void *kern_data_buf;
-	unsigned long data_len;
-	unsigned long result;
-	int error;
+struct te_ss_op_legacy {
+	uint8_t		data[SS_OP_MAX_DATA_SIZE];
 };
 
+int te_handle_ss_ioctl_legacy(struct file *file, unsigned int ioctl_num,
+		unsigned long ioctl_param);
+int te_handle_ss_ioctl(struct file *file, unsigned int ioctl_num,
+		unsigned long ioctl_param);
 int te_handle_fs_ioctl(struct file *file, unsigned int ioctl_num,
 		unsigned long ioctl_param);
 void ote_print_logs(void);
+void tlk_ss_op(void);
 
 #endif

@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2012-2013 NVIDIA CORPORATION.  All rights reserved.
+ * Copyright (c) 2012-2014 NVIDIA CORPORATION.  All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -198,12 +198,63 @@ static void runnables_work_func(struct work_struct *work)
 	}
 }
 
+#define MAX_BYTES 100
+
+static ssize_t show_thresholds(struct cpuquiet_attribute *attr, char *buf)
+{
+	char buffer[MAX_BYTES];
+	unsigned int i;
+	int size = 0;
+	buffer[0] = 0;
+	for_each_possible_cpu(i) {
+		if (i == ARRAY_SIZE(nr_run_thresholds) - 1)
+			break;
+		if (size >= sizeof(buffer))
+			break;
+		size += snprintf(buffer + size, sizeof(buffer) - size,
+			 "%u->%u core threshold: %u\n",
+			  i + 1, i + 2, nr_run_thresholds[i]);
+	}
+	return snprintf(buf, sizeof(buffer), "%s", buffer);
+}
+
+static ssize_t store_thresholds(struct cpuquiet_attribute *attr,
+				const char *buf, size_t count)
+{
+	int ret, i = 0;
+	char *val, *str, input[MAX_BYTES];
+	unsigned int thresholds[NR_CPUS];
+
+	if (!count || count >= MAX_BYTES)
+		return -EINVAL;
+	strncpy(input, buf, count);
+	input[count] = '\0';
+	str = input;
+	memcpy(thresholds, nr_run_thresholds, sizeof(nr_run_thresholds));
+	while ((val = strsep(&str, " ")) != NULL) {
+		if (*val == '\0')
+			continue;
+		if (i == ARRAY_SIZE(nr_run_thresholds) - 1)
+			break;
+		ret = kstrtouint(val, 10, &thresholds[i]);
+		if (ret)
+			return -EINVAL;
+		i++;
+	}
+
+	memcpy(nr_run_thresholds, thresholds, sizeof(thresholds));
+	return count;
+}
+
 CPQ_BASIC_ATTRIBUTE(sample_rate, 0644, uint);
 CPQ_BASIC_ATTRIBUTE(nr_run_hysteresis, 0644, uint);
+CPQ_ATTRIBUTE_CUSTOM(nr_run_thresholds, 0644,
+			show_thresholds, store_thresholds);
 
 static struct attribute *runnables_attributes[] = {
 	&sample_rate_attr.attr,
 	&nr_run_hysteresis_attr.attr,
+	&nr_run_thresholds_attr.attr,
 	NULL,
 };
 
@@ -241,7 +292,6 @@ static void runnables_device_busy(void)
 	mutex_lock(&runnables_lock);
 	if (runnables_state == RUNNING) {
 		runnables_state = IDLE;
-		cancel_work_sync(&runnables_work);
 		del_timer_sync(&runnables_timer);
 	}
 	mutex_unlock(&runnables_lock);
@@ -263,7 +313,6 @@ static void runnables_stop(void)
 
 	runnables_state = DISABLED;
 	del_timer_sync(&runnables_timer);
-	cancel_work_sync(&runnables_work);
 	kobject_put(runnables_kobject);
 	kfree(runnables_kobject);
 
@@ -284,10 +333,10 @@ static int runnables_start(void)
 	runnables_timer.function = runnables_avg_sampler;
 
 	for(i = 0; i < ARRAY_SIZE(nr_run_thresholds); ++i) {
-		if (i < ARRAY_SIZE(default_thresholds))
-			nr_run_thresholds[i] = default_thresholds[i];
-		else if (i == (ARRAY_SIZE(nr_run_thresholds) - 1))
+		if (i == (ARRAY_SIZE(nr_run_thresholds) - 1))
 			nr_run_thresholds[i] = UINT_MAX;
+		else if (i < ARRAY_SIZE(default_thresholds))
+			nr_run_thresholds[i] = default_thresholds[i];
 		else
 			nr_run_thresholds[i] = i + 1 +
 				NR_FSHIFT / default_threshold_level;

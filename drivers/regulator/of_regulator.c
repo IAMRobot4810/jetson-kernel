@@ -48,6 +48,11 @@ static void of_get_regulator_consumer_list(struct device *dev,
 
 	ncount = 0;
 	for_each_child_of_node(np_consumer, child) {
+		/* Ignore the consumer if it is disabled. */
+		ret = of_device_is_available(child);
+		if (!ret)
+			continue;
+
 		ret = of_property_read_string(child,
 				"regulator-consumer-supply",
 				&consumer[ncount].supply);
@@ -60,7 +65,7 @@ static void of_get_regulator_consumer_list(struct device *dev,
 				"regulator-consumer-device",
 				&consumer[ncount].dev_name);
 		if (ret < 0)
-			dev_warn(dev, "Consumer %s does not have device name\n",
+			dev_info(dev, "Consumer %s does not have device name\n",
 					child->name);
 		ncount++;
 	}
@@ -123,9 +128,19 @@ static void of_get_regulation_constraints(struct device_node *np,
 	if (ramp_delay)
 		constraints->ramp_delay = be32_to_cpu(*ramp_delay);
 
+	ret = of_property_read_u32(np, "regulator-ramp-delay-scale", &pval);
+	if (!ret)
+		constraints->ramp_delay_scale = pval;
+
 	ret = of_property_read_u32(np, "regulator-enable-ramp-delay", &pval);
 	if (!ret)
 		constraints->enable_time = pval;
+
+	ret = of_property_read_u32(np, "regulator-init-mode", &pval);
+	if (!ret)
+		constraints->initial_mode = pval;
+	if (of_find_property(np, "regulator-disable-parent-after-enable", NULL))
+		constraints->disable_parent_after_enable = true;
 }
 
 /**

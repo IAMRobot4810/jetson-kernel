@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2012-2013, NVIDIA CORPORATION.  All rights reserved.
+ * Copyright (c) 2012-2014, NVIDIA CORPORATION.  All rights reserved.
  *
  * Description:
  * High-speed USB device controller driver.
@@ -418,6 +418,8 @@ enum tegra_connect_type {
 	CONNECT_TYPE_NONE,
 	CONNECT_TYPE_SDP,
 	CONNECT_TYPE_DCP,
+	CONNECT_TYPE_DCP_MAXIM,
+	CONNECT_TYPE_DCP_QC2,
 	CONNECT_TYPE_CDP,
 	CONNECT_TYPE_NV_CHARGER,
 	CONNECT_TYPE_NON_STANDARD_CHARGER,
@@ -450,6 +452,7 @@ struct tegra_udc {
 	enum tegra_connect_type connect_type;
 	enum tegra_connect_type prev_connect_type;
 	enum tegra_connect_type connect_type_lp0;
+	enum tegra_usb_qc2_voltage qc2_voltage;
 	void __iomem *regs;
 	size_t ep_qh_size;		/* size after alignment adjustment*/
 	dma_addr_t ep_qh_dma;		/* dma address of QH */
@@ -463,6 +466,7 @@ struct tegra_udc {
 	u8 device_address;	/* Device USB address */
 	u32 current_limit;
 	u32 dcp_current_limit;
+	u32 qc2_current_limit;
 	spinlock_t lock;
 	struct mutex sync_lock;
 	unsigned softconnect:1;
@@ -474,10 +478,9 @@ struct tegra_udc {
 	bool support_pmu_vbus;
 	bool fence_read;
 	bool vbus_in_lp0;
-#ifdef CONFIG_EXTCON
+	bool charging_supported;
 	struct extcon_dev *edev;
 	struct extcon_dev *vbus_extcon_dev;
-#endif
 };
 
 

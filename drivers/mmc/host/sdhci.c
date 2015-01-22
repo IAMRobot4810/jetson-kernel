@@ -2,7 +2,7 @@
  *  linux/drivers/mmc/host/sdhci.c - Secure Digital Host Controller Interface driver
  *
  *  Copyright (C) 2005-2008 Pierre Ossman, All Rights Reserved.
- *  Copyright (C) 2012-2013, NVIDIA CORPORATION.  All rights reserved.
+ *  Copyright (C) 2012-2014, NVIDIA CORPORATION.  All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -32,6 +32,10 @@
 #include <linux/mmc/slot-gpio.h>
 
 #include <linux/sysedp.h>
+#ifdef CONFIG_DEBUG_FS
+#include <linux/debugfs.h>
+#include <linux/ktime.h>
+#endif
 
 #ifdef CONFIG_TEGRA_PRE_SILICON_SUPPORT
 #include <linux/tegra-soc.h>
@@ -51,7 +55,18 @@
 
 #define MAX_TUNING_LOOP 40
 
-#define SDIO_CLK_GATING_TICK_TMOUT (HZ / 50)
+/* SDIO 1msec timeout, but use 10msec timeout for HZ=100 */
+#define SDIO_CLK_GATING_TICK_TMOUT ((HZ >= 1000) ? (HZ / 1000) : 1)
+/* 20msec EMMC delayed clock gate timeout */
+#define EMMC_CLK_GATING_TICK_TMOUT ((HZ >= 50) ? (HZ / 50) : 2)
+
+#define IS_SDIO_CARD(host) \
+		(host->mmc->card && \
+		(host->mmc->card->type == MMC_TYPE_SDIO))
+
+#define IS_EMMC_CARD(host) \
+		(host->mmc->card && \
+		(host->mmc->card->type == MMC_TYPE_MMC))
 
 #define IS_SDIO_CARD_OR_EMMC(host) \
 		(host->mmc->card && \
@@ -62,6 +77,10 @@
 		((host->quirks2 & SDHCI_QUIRK2_DELAYED_CLK_GATE) && \
 		(IS_SDIO_CARD_OR_EMMC(host)) && \
 		(host->mmc->caps2 & MMC_CAP2_CLOCK_GATING))
+
+#ifdef CONFIG_DEBUG_FS
+#define IS_32_BIT(x)	(x < (1ULL << 32))
+#endif
 
 static unsigned int debug_quirks = 0;
 static unsigned int debug_quirks2;
@@ -90,51 +109,51 @@ static inline int sdhci_runtime_pm_put(struct sdhci_host *host)
 
 static void sdhci_dumpregs(struct sdhci_host *host)
 {
-	pr_debug(DRIVER_NAME ": =========== REGISTER DUMP (%s)===========\n",
+	pr_err(DRIVER_NAME ": =========== REGISTER DUMP (%s)===========\n",
 		mmc_hostname(host->mmc));
 
-	pr_debug(DRIVER_NAME ": Sys addr: 0x%08x | Version:  0x%08x\n",
+	pr_err(DRIVER_NAME ": Sys addr: 0x%08x | Version:  0x%08x\n",
 		sdhci_readl(host, SDHCI_DMA_ADDRESS),
 		sdhci_readw(host, SDHCI_HOST_VERSION));
-	pr_debug(DRIVER_NAME ": Blk size: 0x%08x | Blk cnt:  0x%08x\n",
+	pr_err(DRIVER_NAME ": Blk size: 0x%08x | Blk cnt:  0x%08x\n",
 		sdhci_readw(host, SDHCI_BLOCK_SIZE),
 		sdhci_readw(host, SDHCI_BLOCK_COUNT));
-	pr_debug(DRIVER_NAME ": Argument: 0x%08x | Trn mode: 0x%08x\n",
+	pr_err(DRIVER_NAME ": Argument: 0x%08x | Trn mode: 0x%08x\n",
 		sdhci_readl(host, SDHCI_ARGUMENT),
 		sdhci_readw(host, SDHCI_TRANSFER_MODE));
-	pr_debug(DRIVER_NAME ": Present:  0x%08x | Host ctl: 0x%08x\n",
+	pr_err(DRIVER_NAME ": Present:  0x%08x | Host ctl: 0x%08x\n",
 		sdhci_readl(host, SDHCI_PRESENT_STATE),
 		sdhci_readb(host, SDHCI_HOST_CONTROL));
-	pr_debug(DRIVER_NAME ": Power:    0x%08x | Blk gap:  0x%08x\n",
+	pr_err(DRIVER_NAME ": Power:    0x%08x | Blk gap:  0x%08x\n",
 		sdhci_readb(host, SDHCI_POWER_CONTROL),
 		sdhci_readb(host, SDHCI_BLOCK_GAP_CONTROL));
-	pr_debug(DRIVER_NAME ": Wake-up:  0x%08x | Clock:    0x%08x\n",
+	pr_err(DRIVER_NAME ": Wake-up:  0x%08x | Clock:    0x%08x\n",
 		sdhci_readb(host, SDHCI_WAKE_UP_CONTROL),
 		sdhci_readw(host, SDHCI_CLOCK_CONTROL));
-	pr_debug(DRIVER_NAME ": Timeout:  0x%08x | Int stat: 0x%08x\n",
+	pr_err(DRIVER_NAME ": Timeout:  0x%08x | Int stat: 0x%08x\n",
 		sdhci_readb(host, SDHCI_TIMEOUT_CONTROL),
 		sdhci_readl(host, SDHCI_INT_STATUS));
-	pr_debug(DRIVER_NAME ": Int enab: 0x%08x | Sig enab: 0x%08x\n",
+	pr_err(DRIVER_NAME ": Int enab: 0x%08x | Sig enab: 0x%08x\n",
 		sdhci_readl(host, SDHCI_INT_ENABLE),
 		sdhci_readl(host, SDHCI_SIGNAL_ENABLE));
-	pr_debug(DRIVER_NAME ": AC12 err: 0x%08x | Slot int: 0x%08x\n",
+	pr_err(DRIVER_NAME ": AC12 err: 0x%08x | Slot int: 0x%08x\n",
 		sdhci_readw(host, SDHCI_ACMD12_ERR),
 		sdhci_readw(host, SDHCI_SLOT_INT_STATUS));
-	pr_debug(DRIVER_NAME ": Caps:     0x%08x | Caps_1:   0x%08x\n",
+	pr_err(DRIVER_NAME ": Caps:     0x%08x | Caps_1:   0x%08x\n",
 		sdhci_readl(host, SDHCI_CAPABILITIES),
 		sdhci_readl(host, SDHCI_CAPABILITIES_1));
-	pr_debug(DRIVER_NAME ": Cmd:      0x%08x | Max curr: 0x%08x\n",
+	pr_err(DRIVER_NAME ": Cmd:      0x%08x | Max curr: 0x%08x\n",
 		sdhci_readw(host, SDHCI_COMMAND),
 		sdhci_readl(host, SDHCI_MAX_CURRENT));
-	pr_debug(DRIVER_NAME ": Host ctl2: 0x%08x\n",
+	pr_err(DRIVER_NAME ": Host ctl2: 0x%08x\n",
 		sdhci_readw(host, SDHCI_HOST_CONTROL2));
 
 	if (host->flags & SDHCI_USE_ADMA)
-		pr_debug(DRIVER_NAME ": ADMA Err: 0x%08x | ADMA Ptr: 0x%08x\n",
+		pr_err(DRIVER_NAME ": ADMA Err: 0x%08x | ADMA Ptr: 0x%08x\n",
 		       readl(host->ioaddr + SDHCI_ADMA_ERROR),
 		       readl(host->ioaddr + SDHCI_ADMA_ADDRESS));
 
-	pr_debug(DRIVER_NAME ": ===========================================\n");
+	pr_err(DRIVER_NAME ": ===========================================\n");
 }
 
 /*****************************************************************************\
@@ -537,11 +556,13 @@ static int sdhci_adma_table_pre(struct sdhci_host *host,
 	 * need to fill it with data first.
 	 */
 
-	host->align_addr = dma_map_single(mmc_dev(host->mmc),
-		host->align_buffer, 128 * 8, direction);
-	if (dma_mapping_error(mmc_dev(host->mmc), host->align_addr))
-		goto fail;
-	BUG_ON(host->align_addr & 0x3);
+	if (!host->use_dma_alloc) {
+		host->align_addr = dma_map_single(mmc_dev(host->mmc),
+			host->align_buffer, 128 * 8, direction);
+		if (dma_mapping_error(mmc_dev(host->mmc), host->align_addr))
+			goto fail;
+		BUG_ON(host->align_addr & 0x3);
+	}
 
 	host->sg_count = dma_map_sg(mmc_dev(host->mmc),
 		data->sg, data->sg_len, direction);
@@ -637,11 +658,13 @@ static int sdhci_adma_table_pre(struct sdhci_host *host,
 			host->align_addr, 128 * 8, direction);
 	}
 
-	host->adma_addr = dma_map_single(mmc_dev(host->mmc),
-		host->adma_desc, (128 * 2 + 1) * 8, DMA_TO_DEVICE);
-	if (dma_mapping_error(mmc_dev(host->mmc), host->adma_addr))
-		goto unmap_entries;
-	BUG_ON(host->adma_addr & 0x3);
+	if (!host->use_dma_alloc) {
+		host->adma_addr = dma_map_single(mmc_dev(host->mmc),
+			host->adma_desc, (128 * 2 + 1) * 8, DMA_TO_DEVICE);
+		if (dma_mapping_error(mmc_dev(host->mmc), host->adma_addr))
+			goto unmap_entries;
+		BUG_ON(host->adma_addr & 0x3);
+	}
 
 	return 0;
 
@@ -649,8 +672,9 @@ unmap_entries:
 	dma_unmap_sg(mmc_dev(host->mmc), data->sg,
 		data->sg_len, direction);
 unmap_align:
-	dma_unmap_single(mmc_dev(host->mmc), host->align_addr,
-		128 * 8, direction);
+	if (!host->use_dma_alloc)
+		dma_unmap_single(mmc_dev(host->mmc), host->align_addr,
+				128 * 8, direction);
 fail:
 	return -EINVAL;
 }
@@ -671,11 +695,13 @@ static void sdhci_adma_table_post(struct sdhci_host *host,
 	else
 		direction = DMA_TO_DEVICE;
 
-	dma_unmap_single(mmc_dev(host->mmc), host->adma_addr,
-		(128 * 2 + 1) * 8, DMA_TO_DEVICE);
+	if (!host->use_dma_alloc) {
+		dma_unmap_single(mmc_dev(host->mmc), host->adma_addr,
+			(128 * 2 + 1) * 8, DMA_TO_DEVICE);
 
-	dma_unmap_single(mmc_dev(host->mmc), host->align_addr,
-		128 * 8, direction);
+		dma_unmap_single(mmc_dev(host->mmc), host->align_addr,
+			128 * 8, direction);
+	}
 
 	if (data->flags & MMC_DATA_READ) {
 		dma_sync_sg_for_cpu(mmc_dev(host->mmc), data->sg,
@@ -986,6 +1012,214 @@ static void sdhci_set_transfer_mode(struct sdhci_host *host,
 	sdhci_writew(host, mode, SDHCI_TRANSFER_MODE);
 }
 
+#ifdef CONFIG_DEBUG_FS
+static void get_kbps_from_size_n_usec_32bit(
+		u32 size_in_bits_x1000, u32 time_usecs,
+		u32 *speed_in_kbps)
+{
+	*speed_in_kbps = DIV_ROUND_CLOSEST(size_in_bits_x1000, time_usecs);
+}
+
+static void get_kbps_from_size_n_usec_64bit(
+		u64 size_in_bits_x1000, u32 time_usecs,
+		u32 *speed_in_kbps)
+{
+	u32 speed_32bit;
+	u64 cp_size_bits_x1000;
+	u32 cp_usecs;
+	int i;
+
+	cp_size_bits_x1000 = size_in_bits_x1000;
+	cp_usecs = time_usecs;
+	/* convert 64 bit into 32 bits */
+	i = 0;
+	while (!(IS_32_BIT(cp_size_bits_x1000) && IS_32_BIT(cp_usecs))) {
+		/* shift right both the operands bytes and time */
+		cp_size_bits_x1000 >>= 1;
+		cp_usecs >>= 1;
+		i++;
+	}
+	if (i)
+		pr_debug("%s right shifted operands by %d, size=%lld, time=%d usec\n",
+			__func__, i, size_in_bits_x1000, time_usecs);
+	/* check for 32 bit operations first */
+	get_kbps_from_size_n_usec_32bit(
+		(u32)cp_size_bits_x1000, cp_usecs,
+		&speed_32bit);
+	*speed_in_kbps = speed_32bit;
+	return;
+}
+
+static void free_stats_nodes(struct sdhci_host *host)
+{
+	struct data_stat_entry *ptr, *ptr2;
+
+	ptr = host->sdhci_data_stat.head;
+	while (ptr) {
+		ptr2 = ptr->next;
+		host->sdhci_data_stat.stat_size--;
+		kfree(ptr);
+		ptr = ptr2;
+	}
+	if (host->sdhci_data_stat.stat_size)
+		pr_err("stat_size=%d after free %s\n",
+			host->sdhci_data_stat.stat_size,
+			__func__);
+}
+
+static struct data_stat_entry *add_entry_sorted(struct sdhci_host *host,
+	unsigned int blk_size, unsigned int blk_count)
+{
+	struct data_stat_entry *node, *ptr;
+
+	node = devm_kzalloc(host->mmc->parent, sizeof(struct data_stat_entry),
+		GFP_KERNEL);
+	if (!node) {
+		pr_err("%s, %s, line=%d: unable to allocate data_stat_entry\n",
+			__FILE__, __func__, __LINE__);
+		return NULL;
+	}
+	node->stat_blk_size = blk_size;
+	node->stat_blks_per_transfer = blk_count;
+	host->sdhci_data_stat.stat_size++;
+	/* assume existing list is sorted and try to insert this new node
+	 * into the increasing order sorted array
+	 */
+	ptr = host->sdhci_data_stat.head;
+	if (!ptr) {
+		/* first element */
+		host->sdhci_data_stat.head = node;
+		return node;
+	}
+	if (ptr && ((ptr->stat_blk_size > blk_size) ||
+		((ptr->stat_blk_size == blk_size) &&
+		(ptr->stat_blks_per_transfer > blk_count)))) {
+		host->sdhci_data_stat.head = node;
+		/* update new head */
+		node->next = ptr;
+		return node;
+	}
+	while (ptr->next) {
+		if ((ptr->next->stat_blk_size < blk_size) ||
+			((ptr->next->stat_blk_size == blk_size) &&
+			(ptr->next->stat_blks_per_transfer < blk_count)))
+			ptr = ptr->next;
+		else
+			break;
+	}
+	/* We are here if -
+	 * 1. ptr->next is null or
+	 * 2. blk_size of ptr->next is greater than new blk size, so we should
+	 *    place the new node between ptr and ptr->next
+	 */
+	if (!ptr->next) {
+		ptr->next = node;
+		return node;
+	}
+	if ((ptr->next->stat_blk_size > blk_size) ||
+		((ptr->next->stat_blk_size == blk_size) &&
+		(ptr->next->stat_blks_per_transfer > blk_count))) {
+		node->next = ptr->next;
+		ptr->next = node;
+		return node;
+	}
+	pr_err("%s line=%d should be unreachable\n", __func__, __LINE__);
+	return NULL;
+}
+
+static void free_data_entry(struct sdhci_host *host,
+				unsigned int blk_size, unsigned int blk_count)
+{
+	struct data_stat_entry *ptr, *ptr2;
+
+	ptr = host->sdhci_data_stat.head;
+	if (!ptr)
+		return;
+	if ((ptr->stat_blk_size == blk_size) &&
+		(ptr->stat_blks_per_transfer == blk_count)) {
+		host->sdhci_data_stat.head = ptr->next;
+		devm_kfree(host->mmc->parent, ptr);
+		return;
+	}
+	if ((!ptr->next) && ((ptr->stat_blk_size == blk_size) &&
+		(ptr->stat_blks_per_transfer == blk_count))) {
+		pr_err("Error %s: only data_entry found has blk_size=%d, given blk_size=%d not found\n",
+			__func__, ptr->stat_blk_size, blk_size);
+		return;
+	}
+	while (ptr->next) {
+		if ((ptr->next->stat_blk_size == blk_size) &&
+			(ptr->next->stat_blks_per_transfer == blk_count)) {
+			ptr2 = ptr->next->next;
+			devm_kfree(host->mmc->parent, ptr->next);
+			ptr->next = ptr2;
+			return;
+		}
+		ptr = ptr->next;
+	}
+	pr_err("Error %s: given blk_size=%d not found\n", __func__, blk_size);
+	return;
+}
+
+static void update_stat(struct sdhci_host *host, u32 blk_size, u8 blk_count,
+			bool is_start_stat, bool is_data_error)
+{
+	u32 new_kbps;
+	struct data_stat_entry *stat;
+	ktime_t t;
+
+	if (!host->enable_sdhci_perf_stats)
+		return;
+
+	stat = host->sdhci_data_stat.head;
+	while (stat) {
+		if ((stat->stat_blk_size == blk_size) &&
+			(stat->stat_blks_per_transfer == blk_count))
+			break;
+		stat = stat->next;
+	}
+	if (!stat) {
+		/* allocate an entry */
+		stat = add_entry_sorted(host, blk_size, blk_count);
+		if (!stat) {
+			pr_err("%s line=%d: stat entry not found\n",
+				__func__, __LINE__);
+			return;
+		}
+	}
+
+	if (is_start_stat) {
+		stat->start_ktime = ktime_get();
+	} else {
+		if (is_data_error) {
+			memset(&stat->start_ktime, 0, sizeof(ktime_t));
+			if (!stat->total_bytes)
+				free_data_entry(host, blk_size, blk_count);
+			return;
+		}
+		t = ktime_get();
+		stat->duration_usecs = ktime_us_delta(t, stat->start_ktime);
+		stat->current_transferred_bytes = (blk_size * blk_count);
+		get_kbps_from_size_n_usec_32bit(
+			(((u32)stat->current_transferred_bytes << 3) * 1000),
+			stat->duration_usecs,
+			&new_kbps);
+		if (stat->max_kbps == 0) {
+			stat->max_kbps = new_kbps;
+			stat->min_kbps = new_kbps;
+		} else {
+			if (new_kbps > stat->max_kbps)
+				stat->max_kbps = new_kbps;
+			if (new_kbps < stat->min_kbps)
+				stat->min_kbps = new_kbps;
+		}
+		/* update the total bytes figure for this entry */
+		stat->total_usecs += stat->duration_usecs;
+		stat->total_bytes += stat->current_transferred_bytes;
+	}
+}
+#endif
+
 static void sdhci_finish_data(struct sdhci_host *host)
 {
 	struct mmc_data *data;
@@ -1038,6 +1272,15 @@ static void sdhci_finish_data(struct sdhci_host *host)
 		sdhci_send_command(host, data->stop);
 	} else
 		tasklet_schedule(&host->finish_tasklet);
+#ifdef CONFIG_DEBUG_FS
+	if (data->bytes_xfered) {
+		update_stat(host, data->blksz, data->blocks, false, false);
+	} else {
+		host->no_data_transfer_count++;
+		/* performance stats does not include cases of data error */
+		update_stat(host, data->blksz, data->blocks, false, true);
+	}
+#endif
 }
 
 static void sdhci_send_command(struct sdhci_host *host, struct mmc_command *cmd)
@@ -1073,7 +1316,14 @@ static void sdhci_send_command(struct sdhci_host *host, struct mmc_command *cmd)
 		mdelay(1);
 	}
 
-	mod_timer(&host->timer, jiffies + 10 * HZ);
+	if ((cmd->opcode == MMC_SWITCH) &&
+		(((cmd->arg >> 16) & EXT_CSD_SANITIZE_START)
+		== EXT_CSD_SANITIZE_START))
+		timeout = 100;
+	else
+		timeout = 10;
+
+	mod_timer(&host->timer, jiffies + timeout * HZ);
 
 	host->cmd = cmd;
 
@@ -1417,6 +1667,12 @@ static void sdhci_request(struct mmc_host *mmc, struct mmc_request *mrq)
 
 	host = mmc_priv(mmc);
 
+#ifdef CONFIG_DEBUG_FS
+	if (mrq->data)
+		update_stat(host, mrq->data->blksz, mrq->data->blocks,
+			true, false);
+#endif
+
 	sdhci_runtime_pm_get(host);
 
 	spin_lock_irqsave(&host->lock, flags);
@@ -1510,6 +1766,9 @@ static void sdhci_do_set_ios(struct sdhci_host *host, struct mmc_ios *ios)
 	unsigned long flags;
 	int vdd_bit = -1;
 	u8 ctrl;
+
+	/* cancel delayed clk gate work */
+	cancel_delayed_work_sync(&host->delayed_clk_gate_wrk);
 
 	/* Do any required preparations prior to setting ios */
 	if (host->ops->platform_ios_config_enter)
@@ -1936,7 +2195,8 @@ static int sdhci_start_signal_voltage_switch(struct mmc_host *mmc,
 	err = sdhci_do_start_signal_voltage_switch(host, ios);
 	/* Do any post voltage switch platform specific configuration */
 	if  (host->ops->switch_signal_voltage_exit)
-		host->ops->switch_signal_voltage_exit(host);
+		host->ops->switch_signal_voltage_exit(host,
+			ios->signal_voltage);
 	sdhci_runtime_pm_put(host);
 	return err;
 }
@@ -2219,10 +2479,8 @@ int sdhci_enable(struct mmc_host *mmc)
 	if (!mmc->card || !(mmc->caps2 & MMC_CAP2_CLOCK_GATING))
 		return 0;
 
-	if (IS_DELAYED_CLK_GATE(host)) {
-		/* cancel sdio clk gate work */
-		cancel_delayed_work_sync(&host->delayed_clk_gate_wrk);
-	}
+	/* cancel delayed clk gate work */
+	cancel_delayed_work_sync(&host->delayed_clk_gate_wrk);
 
 	sysedp_set_state(host->sysedpc, 1);
 
@@ -2269,9 +2527,18 @@ int sdhci_disable(struct mmc_host *mmc)
 		return 0;
 
 	if (IS_DELAYED_CLK_GATE(host)) {
-		if (host->is_clk_on)
-			schedule_delayed_work(&host->delayed_clk_gate_wrk,
-				SDIO_CLK_GATING_TICK_TMOUT);
+		if (host->is_clk_on) {
+			if (IS_SDIO_CARD(host))
+				host->clk_gate_tmout_ticks =
+					SDIO_CLK_GATING_TICK_TMOUT;
+			else if (IS_EMMC_CARD(host))
+				host->clk_gate_tmout_ticks =
+					EMMC_CLK_GATING_TICK_TMOUT;
+			if (host->clk_gate_tmout_ticks > 0)
+				schedule_delayed_work(
+					&host->delayed_clk_gate_wrk,
+					host->clk_gate_tmout_ticks);
+		}
 		return 0;
 	}
 
@@ -2314,6 +2581,31 @@ static void sdhci_gov_exit(struct mmc_host *mmc)
 		host->ops->dfs_gov_exit(host);
 }
 #endif
+
+static int sdhci_select_drive_strength(struct mmc_host *mmc,
+				       unsigned int max_dtr,
+				       int host_drv,
+				       int card_drv)
+{
+	struct sdhci_host *host = mmc_priv(mmc);
+	unsigned char	drv_type;
+
+	/* return default strength if no handler in driver */
+	if (!host->ops->get_drive_strength)
+		return MMC_SET_DRIVER_TYPE_B;
+
+	drv_type = host->ops->get_drive_strength(host, max_dtr,
+			host_drv, card_drv);
+
+	if (drv_type > MMC_SET_DRIVER_TYPE_D) {
+		pr_err("%s: Error on getting drive strength. Got drv_type %d\n"
+			, mmc_hostname(host->mmc), drv_type);
+		return MMC_SET_DRIVER_TYPE_B;
+	}
+
+	return drv_type;
+}
+
 static const struct mmc_host_ops sdhci_ops = {
 	.request	= sdhci_request,
 	.set_ios	= sdhci_set_ios,
@@ -2332,6 +2624,7 @@ static const struct mmc_host_ops sdhci_ops = {
 	.dfs_governor_exit		= sdhci_gov_exit,
 	.dfs_governor_get_target	= sdhci_gov_get_target,
 #endif
+	.select_drive_strength		= sdhci_select_drive_strength,
 };
 
 /*****************************************************************************\
@@ -2476,6 +2769,7 @@ static void sdhci_cmd_irq(struct sdhci_host *host, u32 intmask)
 	} else if (intmask & (SDHCI_INT_CRC | SDHCI_INT_END_BIT |
 			SDHCI_INT_INDEX)) {
 		host->cmd->error = -EILSEQ;
+		sdhci_dumpregs(host);
 		pr_err("%s: Command CRC or END bit error, intmask: %x\n",
 				mmc_hostname(host->mmc), intmask);
 	}
@@ -2581,6 +2875,7 @@ static void sdhci_data_irq(struct sdhci_host *host, u32 intmask)
 		host->data->error = -ETIMEDOUT;
 		pr_err("%s: Data Timeout error, intmask: %x\n",
 				mmc_hostname(host->mmc), intmask);
+		sdhci_dumpregs(host);
 	} else if (intmask & SDHCI_INT_DATA_END_BIT) {
 		host->data->error = -EILSEQ;
 		pr_err("%s: Data END Bit error, intmask: %x\n",
@@ -2591,8 +2886,10 @@ static void sdhci_data_irq(struct sdhci_host *host, u32 intmask)
 		host->data->error = -EILSEQ;
 		pr_err("%s: Data CRC error, intmask: %x\n",
 				mmc_hostname(host->mmc), intmask);
+		sdhci_dumpregs(host);
 	} else if (intmask & SDHCI_INT_ADMA_ERROR) {
 		pr_err("%s: ADMA error\n", mmc_hostname(host->mmc));
+		sdhci_dumpregs(host);
 		sdhci_show_adma_error(host);
 		host->data->error = -EIO;
 		if (host->ops->adma_workaround)
@@ -2633,16 +2930,15 @@ static void sdhci_data_irq(struct sdhci_host *host, u32 intmask)
 		}
 
 		if (intmask & SDHCI_INT_DATA_END) {
-			if (host->cmd) {
+			if (host->cmd)
 				/*
 				 * Data managed to finish before the
 				 * command completed. Make sure we do
 				 * things in the proper order.
 				 */
 				host->data_early = 1;
-			} else {
+			else
 				sdhci_finish_data(host);
-			}
 		}
 	}
 }
@@ -2843,7 +3139,7 @@ int sdhci_suspend_host(struct sdhci_host *host)
 		host->card_int_set = sdhci_readl(host, SDHCI_INT_ENABLE) &
 			SDHCI_INT_CARD_INT;
 
-	/* cancel sdio clk gate work */
+	/* cancel delayed clk gate work */
 	cancel_delayed_work_sync(&host->delayed_clk_gate_wrk);
 
 	if (!device_may_wakeup(mmc_dev(host->mmc))) {
@@ -2979,7 +3275,8 @@ int sdhci_runtime_resume_host(struct sdhci_host *host)
 	sdhci_do_start_signal_voltage_switch(host, &host->mmc->ios);
 	/* Do any post voltage switch platform specific configuration */
 	if  (host->ops->switch_signal_voltage_exit)
-		host->ops->switch_signal_voltage_exit(host);
+		host->ops->switch_signal_voltage_exit(host,
+			host->mmc->ios.signal_voltage);
 	if ((host_flags & SDHCI_PV_ENABLED) &&
 		!(host->quirks2 & SDHCI_QUIRK2_PRESET_VALUE_BROKEN)) {
 		spin_lock_irqsave(&host->lock, flags);
@@ -3035,6 +3332,135 @@ struct sdhci_host *sdhci_alloc_host(struct device *dev,
 }
 
 EXPORT_SYMBOL_GPL(sdhci_alloc_host);
+
+#ifdef CONFIG_DEBUG_FS
+static int show_sdhci_perf_stats(struct seq_file *s, void *data)
+{
+	struct sdhci_host *host = s->private;
+	int i;
+	u32 avg_perf2;
+	u32 last_perf_in_class;
+	struct data_stat_entry *stat = NULL;
+	char buf[250];
+
+	seq_printf(s, "SDHCI(%s): perf statistics stat_size=%d\n",
+		mmc_hostname(host->mmc),
+		host->sdhci_data_stat.stat_size
+		);
+	if (host->sdhci_data_stat.stat_size) {
+		seq_printf(s, "SDHCI(%s): perf statistics:\n",
+			mmc_hostname(host->mmc));
+		seq_puts(s,
+		"Note: Performance figures in kilo bits per sec(kbps)\n");
+		seq_puts(s,
+		"S.No.    Block       Num blks/        Total                Total          Last            Last usec          Avg kbps        Last kbps           Min kbps   Max kbps\n");
+		seq_puts(s,
+		"         Size        transfer         Bytes                Time(usec)     Bytes           Duration           Perf            Perf                Perf       Perf\n");
+	}
+	for (i = 0; i < host->sdhci_data_stat.stat_size; i++) {
+		if (!stat)
+			stat = host->sdhci_data_stat.head;
+		else
+			stat = stat->next;
+		get_kbps_from_size_n_usec_64bit(
+			((stat->total_bytes << 3) * 1000),
+			stat->total_usecs, &avg_perf2);
+		get_kbps_from_size_n_usec_32bit(
+			(((u32)stat->current_transferred_bytes << 3) * 1000),
+			stat->duration_usecs,
+			&last_perf_in_class);
+		snprintf(buf, 250,
+			"%2d    %4d      %8d    %16lld            %8d    %8d            %8d           %8d         %8d         %8d    %8d\n",
+			(i + 1),
+			stat->stat_blk_size,
+			stat->stat_blks_per_transfer,
+			stat->total_bytes,
+			stat->total_usecs,
+			stat->current_transferred_bytes,
+			stat->duration_usecs,
+			avg_perf2,
+			last_perf_in_class,
+			stat->min_kbps,
+			stat->max_kbps
+			);
+		seq_puts(s, buf);
+	}
+
+	return 0;
+}
+
+static int sdhci_perf_stats_dump(struct inode *inode, struct file *file)
+{
+	return single_open(file, show_sdhci_perf_stats, inode->i_private);
+}
+
+static const struct file_operations flush_sdhci_perf_stats_fops = {
+	.open		= sdhci_perf_stats_dump,
+	.read		= seq_read,
+	.llseek		= seq_lseek,
+	.release	= single_release,
+};
+
+static int restart_sdhci_perf_stats(struct seq_file *s, void *data)
+{
+	struct sdhci_host *host = s->private;
+
+	free_stats_nodes(host);
+	return 0;
+}
+
+static int sdhci_perf_stats_restart(struct inode *inode, struct file *file)
+{
+	return single_open(file, restart_sdhci_perf_stats, inode->i_private);
+}
+
+static const struct file_operations reset_sdhci_perf_stats_fops = {
+	.open		= sdhci_perf_stats_restart,
+	.read		= seq_read,
+	.llseek		= seq_lseek,
+	.release	= single_release,
+};
+
+static void sdhci_debugfs_init(struct sdhci_host *host)
+{
+	struct dentry *root = host->debugfs_root;
+
+	/*
+	 * debugfs nodes earlier were created from sdhci-tegra,
+	 * In this change root debugfs node is created first-come-first-serve
+	 */
+	if (!root) {
+		root = debugfs_create_dir(dev_name(mmc_dev(host->mmc)), NULL);
+		if (IS_ERR_OR_NULL(root))
+			goto err_root;
+		host->debugfs_root = root;
+	}
+
+	if (!debugfs_create_u32("enable_sdhci_perf_stats", S_IRUGO | S_IWUSR,
+		root, (u32 *)&host->enable_sdhci_perf_stats))
+		goto err_root;
+
+	if (!debugfs_create_file("reset_sdhci_perf_stats", S_IRUGO,
+		root, host, &reset_sdhci_perf_stats_fops))
+		goto err_root;
+
+	if (!debugfs_create_file("sdhci_perf_stats", S_IRUGO,
+		root, host, &flush_sdhci_perf_stats_fops))
+		goto err_root;
+
+	if (!debugfs_create_u32("sdhci_perf_no_data_transfer_count", S_IRUGO,
+		root, (u32 *)&host->no_data_transfer_count))
+		goto err_root;
+
+	return;
+
+err_root:
+	debugfs_remove_recursive(root);
+	host->debugfs_root = NULL;
+
+	return;
+}
+#endif
 
 int sdhci_add_host(struct sdhci_host *host)
 {
@@ -3116,6 +3542,33 @@ int sdhci_add_host(struct sdhci_host *host)
 		 * each of those entries. Simply allocating 128 bits
 		 * for each entry
 		 */
+		if (mmc_dev(host->mmc)->dma_mask &&
+				mmc_dev(host->mmc)->coherent_dma_mask) {
+			host->adma_desc = dma_alloc_coherent(
+					mmc_dev(host->mmc), (128 * 2 + 1) * 8,
+					&host->adma_addr, GFP_KERNEL);
+			if (!host->adma_desc)
+				goto err_dma_alloc;
+
+			host->align_buffer = dma_alloc_coherent(
+					mmc_dev(host->mmc), 128 * 8,
+					&host->align_addr, GFP_KERNEL);
+			if (!host->align_buffer) {
+				dma_free_coherent(mmc_dev(host->mmc),
+						(128 * 2 + 1) * 8,
+						host->adma_desc,
+						host->adma_addr);
+				host->adma_desc = NULL;
+				goto err_dma_alloc;
+			}
+
+			host->use_dma_alloc = true;
+
+			BUG_ON(host->adma_addr & 0x3);
+			BUG_ON(host->align_addr & 0x3);
+			goto out_dma_alloc;
+		}
+err_dma_alloc:
 		host->adma_desc = kmalloc((128 * 2 + 1) * 8, GFP_KERNEL);
 		host->align_buffer = kmalloc(128 * 8, GFP_KERNEL);
 		if (!host->adma_desc || !host->align_buffer) {
@@ -3127,6 +3580,7 @@ int sdhci_add_host(struct sdhci_host *host)
 			host->flags &= ~SDHCI_USE_ADMA;
 		}
 	}
+out_dma_alloc:
 
 	/*
 	 * If we use DMA, then it's up to the caller to set the DMA
@@ -3541,6 +3995,10 @@ int sdhci_add_host(struct sdhci_host *host)
 		(host->flags & SDHCI_USE_SDMA) ? "DMA" : "PIO");
 
 	sdhci_enable_card_detection(host);
+#ifdef CONFIG_DEBUG_FS
+	/* Add debugfs nodes */
+	sdhci_debugfs_init(host);
+#endif
 
 	return 0;
 
@@ -3608,8 +4066,15 @@ void sdhci_remove_host(struct sdhci_host *host, int dead)
 		regulator_put(host->vqmmc);
 	}
 
-	kfree(host->adma_desc);
-	kfree(host->align_buffer);
+	if (host->use_dma_alloc) {
+		dma_free_coherent(mmc_dev(host->mmc), (128 * 2 + 1) * 8,
+				host->adma_desc, host->adma_addr);
+		dma_free_coherent(mmc_dev(host->mmc), 128 * 8,
+				host->align_buffer, host->align_addr);
+	} else {
+		kfree(host->adma_desc);
+		kfree(host->align_buffer);
+	}
 
 	host->adma_desc = NULL;
 	host->align_buffer = NULL;

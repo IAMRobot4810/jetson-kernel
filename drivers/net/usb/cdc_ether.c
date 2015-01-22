@@ -489,6 +489,7 @@ static const struct driver_info rmnet_info = {
 #define ZTE_VENDOR_ID		0x19D2
 #define DELL_VENDOR_ID		0x413C
 #define REALTEK_VENDOR_ID	0x0bda
+#define SAMSUNG_VENDOR_ID       0x04e8
 
 static const struct usb_device_id	products [] = {
 /*
@@ -650,6 +651,14 @@ static const struct usb_device_id	products [] = {
 	.driver_info = 0,
 },
 #endif
+#if defined(CONFIG_USB_RTL8152) || defined(CONFIG_USB_RTL8152_MODULE)
+/* Samsung USB Ethernet Adapters */
+{
+       USB_DEVICE_AND_INTERFACE_INFO(SAMSUNG_VENDOR_ID, 0xa101, USB_CLASS_COMM,
+                       USB_CDC_SUBCLASS_ETHERNET, USB_CDC_PROTO_NONE),
+       .driver_info = 0,
+},
+#endif
 
 /* PH450 */
 {
@@ -684,8 +693,15 @@ static const struct usb_device_id	products [] = {
 	USB_DEVICE(0x19D2,0x1554),
 	.driver_info = (unsigned long)&rmnet_info,
 },
-/*
- * WHITELIST!!!
+
+/* Samsung USB Ethernet Adapters */
+{
+	USB_DEVICE_AND_INTERFACE_INFO(SAMSUNG_VENDOR_ID, 0xa101, USB_CLASS_COMM,
+			USB_CDC_SUBCLASS_ETHERNET, USB_CDC_PROTO_NONE),
+	.driver_info = 0,
+},
+
+/* WHITELIST!!!
  *
  * CDC Ether uses two interfaces, not necessarily consecutive.
  * We match the main interface, ignoring the optional device

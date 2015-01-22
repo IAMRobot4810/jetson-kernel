@@ -3,7 +3,7 @@
  *
  * Tegra Graphics Host Chip Support
  *
- * Copyright (c) 2011-2013, NVIDIA Corporation.  All rights reserved.
+ * Copyright (c) 2011-2014, NVIDIA Corporation.  All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify it
  * under the terms and conditions of the GNU General Public License,
@@ -65,10 +65,6 @@ struct nvhost_pushbuffer_ops {
 	int (*init)(struct push_buffer *);
 	void (*destroy)(struct push_buffer *);
 	void (*push_to)(struct push_buffer *,
-			struct mem_mgr *, struct mem_handle *,
-			u32 op1, u32 op2);
-	void (*_push_to)(struct push_buffer *,
-			dma_addr_t iova,
 			u32 op1, u32 op2);
 	void (*pop_from)(struct push_buffer *,
 			 unsigned int slots);
@@ -129,6 +125,7 @@ struct nvhost_dev_ops {
 	struct nvhost_channel *(*alloc_nvhost_channel)(
 			struct platform_device *dev);
 	void (*free_nvhost_channel)(struct nvhost_channel *ch);
+	void (*set_nvhost_chanops)(struct nvhost_channel *ch);
 };
 
 struct nvhost_actmon_ops {
@@ -148,14 +145,6 @@ struct nvhost_actmon_ops {
 	void (*debug_init)(struct host1x_actmon *actmon, struct dentry *de);
 };
 
-struct nvhost_tickctrl_ops {
-	int (*init_channel)(struct platform_device *dev);
-	void (*deinit_channel)(struct platform_device *dev);
-	int (*tickcount)(struct platform_device *dev, u64 *val);
-	int (*stallcount)(struct platform_device *dev, u64 *val);
-	int (*xfercount)(struct platform_device *dev, u64 *val);
-};
-
 struct nvhost_chip_support {
 	const char * soc_name;
 	struct nvhost_cdma_ops cdma;
@@ -165,7 +154,6 @@ struct nvhost_chip_support {
 	struct nvhost_intr_ops intr;
 	struct nvhost_dev_ops nvhost_dev;
 	struct nvhost_actmon_ops actmon;
-	struct nvhost_tickctrl_ops tickctrl;
 	void (*remove_support)(struct nvhost_chip_support *op);
 	void *priv;
 };

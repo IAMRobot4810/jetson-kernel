@@ -29,6 +29,7 @@
 #include <linux/firmware.h>
 #include <linux/dma-mapping.h>
 #include <linux/tegra-soc.h>
+#include <linux/anon_inodes.h>
 
 #include <trace/events/nvhost.h>
 
@@ -44,8 +45,6 @@
 #include "bus_client.h"
 #include "dev.h"
 #include "class_ids.h"
-#include "nvhost_as.h"
-#include "nvhost_memmgr.h"
 #include "chip_support.h"
 #include "nvhost_acm.h"
 
@@ -53,8 +52,9 @@
 #include "nvhost_channel.h"
 #include "nvhost_job.h"
 #include "nvhost_hwctx.h"
-#include "user_hwctx.h"
 #include "nvhost_sync.h"
+
+DEFINE_MUTEX(channel_lock);
 
 static int validate_reg(struct platform_device *ndev, u32 offset, int count)
 {
@@ -117,7 +117,10 @@ int nvhost_read_module_regs(struct platform_device *ndev,
 	if (err)
 		return err;
 
-	nvhost_module_busy(ndev);
+	err = nvhost_module_busy(ndev);
+	if (err)
+		return err;
+
 	p += offset;
 	while (count--) {
 		*(values++) = readl(p);
@@ -143,7 +146,10 @@ int nvhost_write_module_regs(struct platform_device *ndev,
 	if (err)
 		return err;
 
-	nvhost_module_busy(ndev);
+	err = nvhost_module_busy(ndev);
+	if (err)
+		return err;
+
 	p += offset;
 	while (count--) {
 		writel(*(values++), p);
@@ -159,7 +165,6 @@ struct nvhost_channel_userctx {
 	struct nvhost_channel *ch;
 	struct nvhost_hwctx *hwctx;
 	struct nvhost_job *job;
-	struct mem_mgr *memmgr;
 	u32 timeout;
 	u32 priority;
 	int clientid;
@@ -170,6 +175,11 @@ static int nvhost_channelrelease(struct inode *inode, struct file *filp)
 {
 	struct nvhost_channel_userctx *priv = filp->private_data;
 
+	mutex_lock(&channel_lock);
+	if (!priv->ch || !priv->ch->dev) {
+		mutex_unlock(&channel_lock);
+		return 0;
+	}
 	trace_nvhost_channel_release(dev_name(&priv->ch->dev->dev));
 
 	filp->private_data = NULL;
@@ -191,176 +201,161 @@ static int nvhost_channelrelease(struct inode *inode, struct file *filp)
 	if (priv->job)
 		nvhost_job_put(priv->job);
 
-	nvhost_putchannel(priv->ch);
-
-	nvhost_memmgr_put_mgr(priv->memmgr);
+	mutex_unlock(&channel_lock);
+	nvhost_putchannel(priv->ch, 1);
 	kfree(priv);
 	return 0;
 }
 
-static int nvhost_channelopen(struct inode *inode, struct file *filp)
+static int __nvhost_channelopen(struct inode *inode,
+		struct nvhost_channel *ch,
+		struct file *filp)
 {
 	struct nvhost_channel_userctx *priv;
-	struct nvhost_channel *ch;
 	struct nvhost_device_data *pdata;
+	int ret;
 
-	ch = container_of(inode->i_cdev, struct nvhost_channel, cdev);
-	ch = nvhost_getchannel(ch, false);
-	if (!ch)
-		return -ENOMEM;
+	if (inode) {
+		pdata = container_of(inode->i_cdev,
+				struct nvhost_device_data, cdev);
+		ret = nvhost_channel_map(pdata, &ch);
+		if (ret) {
+			pr_err("%s: failed to map channel, error: %d\n",
+					__func__, ret);
+			return ret;
+		}
+	} else {
+		if (!ch || !ch->dev) {
+			pr_err("%s: NULL channel request to get\n", __func__);
+			return -EINVAL;
+		}
+		pdata = platform_get_drvdata(ch->dev);
+		if (!pdata->exclusive)
+			nvhost_getchannel(ch);
+		else
+			return -EBUSY;
+	}
+
+	mutex_lock(&channel_lock);
+	if (!ch || !ch->dev) {
+		mutex_unlock(&channel_lock);
+		return -EINVAL;
+	}
 	trace_nvhost_channel_open(dev_name(&ch->dev->dev));
 
 	priv = kzalloc(sizeof(*priv), GFP_KERNEL);
 	if (!priv) {
-		nvhost_putchannel(ch);
-		return -ENOMEM;
+		nvhost_putchannel(ch, 1);
+		goto fail;
 	}
 	filp->private_data = priv;
 	priv->ch = ch;
 	if (nvhost_module_add_client(ch->dev, priv))
-		goto fail;
+		goto fail_add_client;
 
 	if (ch->ctxhandler && ch->ctxhandler->alloc) {
-		nvhost_module_busy(ch->dev);
+		ret = nvhost_module_busy(ch->dev);
+		if (ret)
+			goto fail_priv;
+
 		priv->hwctx = ch->ctxhandler->alloc(ch->ctxhandler, ch);
 		nvhost_module_idle(ch->dev);
 		if (!priv->hwctx)
-			goto fail;
+			goto fail_priv;
 	}
 	priv->priority = NVHOST_PRIORITY_MEDIUM;
 	priv->clientid = atomic_add_return(1,
 			&nvhost_get_host(ch->dev)->clientid);
+	/* If we wrapped around to 0, increment again */
+	if (!priv->clientid)
+		priv->clientid = atomic_add_return(1,
+				&nvhost_get_host(ch->dev)->clientid);
 	pdata = dev_get_drvdata(ch->dev->dev.parent);
 	priv->timeout = pdata->nvhost_timeout_default;
 	priv->timeout_debug_dump = true;
 	if (!tegra_platform_is_silicon())
 		priv->timeout = 0;
+	mutex_unlock(&channel_lock);
 	return 0;
+fail_priv:
+	nvhost_module_remove_client(ch->dev, priv);
+fail_add_client:
+	kfree(priv);
 fail:
+	mutex_unlock(&channel_lock);
 	nvhost_channelrelease(inode, filp);
 	return -ENOMEM;
 }
 
-static int nvhost_ioctl_channel_alloc_obj_ctx(
-	struct nvhost_channel_userctx *ctx,
-	struct nvhost_alloc_obj_ctx_args *args)
+static int nvhost_channelopen(struct inode *inode, struct file *filp)
 {
-	int ret;
-
-	BUG_ON(!channel_op(ctx->ch).alloc_obj);
-	nvhost_module_busy(ctx->ch->dev);
-	ret = channel_op(ctx->ch).alloc_obj(ctx->hwctx, args);
-	nvhost_module_idle(ctx->ch->dev);
-	return ret;
+	return __nvhost_channelopen(inode, NULL, filp);
 }
 
-static int nvhost_ioctl_channel_free_obj_ctx(
-	struct nvhost_channel_userctx *ctx,
-	struct nvhost_free_obj_ctx_args *args)
+void nvhost_set_notifier(struct nvhost_channel *ch, __u32 error)
 {
-	int ret;
-
-	BUG_ON(!channel_op(ctx->ch).free_obj);
-	nvhost_module_busy(ctx->ch->dev);
-	ret = channel_op(ctx->ch).free_obj(ctx->hwctx, args);
-	nvhost_module_idle(ctx->ch->dev);
-	return ret;
+	if (ch->error_notifier_ref) {
+		struct timespec time_data;
+		u64 nsec;
+		getnstimeofday(&time_data);
+		nsec = ((u64)time_data.tv_sec) * 1000000000u +
+				(u64)time_data.tv_nsec;
+		ch->error_notifier->time_stamp.nanoseconds[0] =
+				(u32)nsec;
+		ch->error_notifier->time_stamp.nanoseconds[1] =
+				(u32)(nsec >> 32);
+		ch->error_notifier->info32 = error;
+		ch->error_notifier->status = 0xffff;
+		dev_err(&ch->dev->dev, "error notifier set to %d\n", error);
+	}
 }
 
-static int nvhost_ioctl_channel_alloc_gpfifo(
-	struct nvhost_channel_userctx *ctx,
-	struct nvhost_alloc_gpfifo_args *args)
+void nvhost_free_error_notifiers(struct nvhost_channel *ch)
 {
-	int ret;
-
-	BUG_ON(!channel_op(ctx->ch).alloc_gpfifo);
-	nvhost_module_busy(ctx->ch->dev);
-	ret = channel_op(ctx->ch).alloc_gpfifo(ctx->hwctx, args);
-	nvhost_module_idle(ctx->ch->dev);
-	return ret;
+	if (ch->error_notifier_ref) {
+		dma_buf_vunmap(ch->error_notifier_ref, ch->error_notifier_va);
+		dma_buf_put(ch->error_notifier_ref);
+		ch->error_notifier_ref = 0;
+		ch->error_notifier = 0;
+		ch->error_notifier_va = 0;
+	}
 }
 
-static int nvhost_ioctl_channel_set_error_notifier(
-	struct nvhost_channel_userctx *ctx,
-	struct nvhost_set_error_notifier *args)
-{
-	int ret;
-	BUG_ON(!channel_op(ctx->ch).set_error_notifier);
-	ret = channel_op(ctx->ch).set_error_notifier(ctx->hwctx, args);
-	return ret;
-}
+static int nvhost_init_error_notifier(struct nvhost_channel *ch,
+		struct nvhost_set_error_notifier *args) {
+	void *va;
 
-static int nvhost_ioctl_channel_submit_gpfifo(
-	struct nvhost_channel_userctx *ctx,
-	struct nvhost_submit_gpfifo_args *args)
-{
-	void *gpfifo;
-	u32 size;
-	int ret = 0;
+	struct dma_buf *dmabuf;
+	if (!args->mem) {
+		dev_err(&ch->dev->dev, "invalid memory handle\n");
+		return -EINVAL;
+	}
 
-	if (!ctx->hwctx || ctx->hwctx->has_timedout)
-		return -ETIMEDOUT;
+	dmabuf = dma_buf_get(args->mem);
 
-	size = args->num_entries * sizeof(struct nvhost_gpfifo);
+	if (ch->error_notifier_ref)
+		nvhost_free_error_notifiers(ch);
 
-	gpfifo = kzalloc(size, GFP_KERNEL);
-	if (!gpfifo)
+	if (IS_ERR(dmabuf)) {
+		dev_err(&ch->dev->dev, "Invalid handle: %d\n", args->mem);
+		return -EINVAL;
+	}
+
+	/* map handle */
+	va = dma_buf_vmap(dmabuf);
+	if (!va) {
+		dma_buf_put(dmabuf);
+		dev_err(&ch->dev->dev, "Cannot map notifier handle\n");
 		return -ENOMEM;
-
-	if (copy_from_user(gpfifo,
-			   (void __user *)(uintptr_t)args->gpfifo, size)) {
-		ret = -EINVAL;
-		goto clean_up;
 	}
 
-	BUG_ON(!channel_op(ctx->ch).submit_gpfifo);
+	/* set channel notifiers pointer */
+	ch->error_notifier_ref = dmabuf;
+	ch->error_notifier = va + args->offset;
+	ch->error_notifier_va = va;
+	memset(ch->error_notifier, 0, sizeof(struct nvhost_notification));
+	return 0;
 
-	nvhost_module_busy(ctx->ch->dev);
-	ret = channel_op(ctx->ch).submit_gpfifo(ctx->hwctx, gpfifo,
-			args->num_entries, &args->fence, args->flags);
-	nvhost_module_idle(ctx->ch->dev);
-clean_up:
-	kfree(gpfifo);
-	return ret;
-}
-
-static int nvhost_ioctl_channel_wait(
-	struct nvhost_channel_userctx *ctx,
-	struct nvhost_wait_args *args)
-{
-	int ret;
-
-	BUG_ON(!channel_op(ctx->ch).wait);
-	nvhost_module_busy(ctx->ch->dev);
-	ret = channel_op(ctx->ch).wait(ctx->hwctx, args);
-	nvhost_module_idle(ctx->ch->dev);
-	return ret;
-}
-
-static int nvhost_ioctl_channel_set_priority(
-	struct nvhost_channel_userctx *ctx,
-	struct nvhost_set_priority_args *args)
-{
-	int ret = 0;
-	if (channel_op(ctx->ch).set_priority) {
-		nvhost_module_busy(ctx->ch->dev);
-		ret = channel_op(ctx->ch).set_priority(ctx->hwctx, args);
-		nvhost_module_idle(ctx->ch->dev);
-	}
-	return ret;
-}
-
-static int nvhost_ioctl_channel_zcull_bind(
-	struct nvhost_channel_userctx *ctx,
-	struct nvhost_zcull_bind_args *args)
-{
-	int ret;
-
-	BUG_ON(!channel_zcull_op(ctx->ch).bind);
-	nvhost_module_busy(ctx->ch->dev);
-	ret = channel_zcull_op(ctx->ch).bind(ctx->hwctx, args);
-	nvhost_module_idle(ctx->ch->dev);
-	return ret;
 }
 
 static int nvhost_ioctl_channel_submit(struct nvhost_channel_userctx *ctx,
@@ -399,8 +394,7 @@ static int nvhost_ioctl_channel_submit(struct nvhost_channel_userctx *ctx,
 			num_cmdbufs,
 			num_relocs,
 			num_waitchks,
-			num_syncpt_incrs,
-			ctx->memmgr);
+			num_syncpt_incrs);
 	if (!job)
 		return -ENOMEM;
 
@@ -504,7 +498,7 @@ static int nvhost_ioctl_channel_submit(struct nvhost_channel_userctx *ctx,
 			goto fail;
 
 		/* Validate */
-		if (sp.syncpt_id > host->info.nb_pts) {
+		if (sp.syncpt_id >= host->info.nb_pts) {
 			err = -EINVAL;
 			goto fail;
 		}
@@ -580,8 +574,7 @@ static int nvhost_ioctl_channel_submit(struct nvhost_channel_userctx *ctx,
 			pts[i].thresh = job->sp[i].fence;
 		}
 
-		err = nvhost_sync_create_fence(
-				&nvhost_get_host(ctx->ch->dev)->syncpt,
+		err = nvhost_sync_create_fence_fd(ctx->ch->dev,
 				pts, num_syncpt_incrs, "fence", &args->fence);
 		if (err)
 			goto fail;
@@ -601,147 +594,6 @@ fail:
 	kfree(local_class_ids);
 	kfree(local_waitbases);
 	return err;
-}
-
-static int nvhost_ioctl_channel_set_ctxswitch(
-		struct nvhost_channel_userctx *ctx,
-		struct nvhost_set_ctxswitch_args *args)
-{
-	struct nvhost_cmdbuf cmdbuf_save;
-	struct nvhost_cmdbuf cmdbuf_restore;
-	struct nvhost_syncpt_incr save_incr, restore_incr;
-	u32 save_waitbase, restore_waitbase;
-	struct nvhost_reloc reloc;
-	struct nvhost_hwctx_handler *ctxhandler = NULL;
-	struct nvhost_hwctx *nhwctx = NULL;
-	struct user_hwctx *hwctx;
-	struct nvhost_device_data *pdata = platform_get_drvdata(ctx->ch->dev);
-	int err;
-
-	/* Only channels with context support */
-	if (!ctx->hwctx)
-		return -EFAULT;
-
-	/* We don't yet support other than one nvhost_syncpt_incrs per submit */
-	if (args->num_cmdbufs_save != 1
-			|| args->num_cmdbufs_restore != 1
-			|| args->num_save_incrs != 1
-			|| args->num_restore_incrs != 1
-			|| args->num_relocs != 1)
-		return -EINVAL;
-
-	err = copy_from_user(&cmdbuf_save,
-			(void *)(uintptr_t)args->cmdbuf_save,
-			sizeof(cmdbuf_save));
-	if (err)
-		goto fail;
-
-	err = copy_from_user(&cmdbuf_restore,
-			(void *)(uintptr_t)args->cmdbuf_restore,
-			sizeof(cmdbuf_restore));
-	if (err)
-		goto fail;
-
-	err = copy_from_user(&reloc, (void *)(uintptr_t)args->relocs,
-			sizeof(reloc));
-	if (err)
-		goto fail;
-
-	err = copy_from_user(&save_incr,
-			(void *)(uintptr_t)args->save_incrs,
-			sizeof(save_incr));
-	if (err)
-		goto fail;
-	err = copy_from_user(&save_waitbase,
-			(void *)(uintptr_t)args->save_waitbases,
-			sizeof(save_waitbase));
-
-	err = copy_from_user(&restore_incr,
-			(void *)(uintptr_t)args->restore_incrs,
-			sizeof(restore_incr));
-	if (err)
-		goto fail;
-	err = copy_from_user(&restore_waitbase,
-			(void *)(uintptr_t)args->restore_waitbases,
-			sizeof(restore_waitbase));
-
-	if (save_incr.syncpt_id != pdata->syncpts[0]
-			|| restore_incr.syncpt_id != pdata->syncpts[0]
-			|| save_waitbase != pdata->waitbases[0]
-			|| restore_waitbase != pdata->waitbases[0]) {
-		err = -EINVAL;
-		goto fail;
-	}
-	ctxhandler = user_ctxhandler_init(save_incr.syncpt_id,
-			save_waitbase, ctx->ch);
-	if (!ctxhandler) {
-		err = -ENOMEM;
-		goto fail;
-	}
-
-	nhwctx = ctxhandler->alloc(ctxhandler, ctx->ch);
-	if (!nhwctx) {
-		err = -ENOMEM;
-		goto fail_hwctx;
-	}
-	hwctx = to_user_hwctx(nhwctx);
-
-	trace_nvhost_ioctl_channel_set_ctxswitch(ctx->ch->dev->name, nhwctx,
-			cmdbuf_save.mem, cmdbuf_save.offset, cmdbuf_save.words,
-			cmdbuf_restore.mem, cmdbuf_restore.offset,
-			cmdbuf_restore.words,
-			pdata->syncpts[0], pdata->waitbases[0],
-			save_incr.syncpt_incrs, restore_incr.syncpt_incrs);
-
-	nhwctx->memmgr = nvhost_memmgr_get_mgr(ctx->memmgr);
-	if (!nhwctx->memmgr)
-		goto fail_set_restore;
-
-	err = user_hwctx_set_restore(hwctx, cmdbuf_restore.mem,
-			cmdbuf_restore.offset, cmdbuf_restore.words);
-	if (err)
-		goto fail_set_restore;
-
-	err = user_hwctx_set_save(hwctx, cmdbuf_save.mem,
-			cmdbuf_save.offset, cmdbuf_save.words, &reloc);
-	if (err)
-		goto fail_set_save;
-
-	hwctx->hwctx.save_incrs = save_incr.syncpt_incrs;
-	hwctx->hwctx.restore_incrs = restore_incr.syncpt_incrs;
-
-	/* Free old context */
-	ctx->hwctx->h->put(ctx->hwctx);
-	ctx->hwctx = nhwctx;
-
-	return 0;
-
-fail_set_save:
-fail_set_restore:
-	ctxhandler->put(&hwctx->hwctx);
-fail_hwctx:
-	user_ctxhandler_free(ctxhandler);
-fail:
-	return err;
-}
-
-#if defined(CONFIG_GK20A_CYCLE_STATS)
-static int nvhost_ioctl_channel_cycle_stats(
-	struct nvhost_channel_userctx *ctx,
-	struct nvhost_cycle_stats_args *args)
-{
-	int ret;
-	BUG_ON(!channel_op(ctx->ch).cycle_stats);
-	ret = channel_op(ctx->ch).cycle_stats(ctx->hwctx, args);
-	return ret;
-}
-#endif
-
-static int nvhost_ioctl_channel_read_3d_reg(struct nvhost_channel_userctx *ctx,
-	struct nvhost_read_3d_reg_args *args)
-{
-	return nvhost_channel_read_reg(ctx->ch, ctx->hwctx,
-			args->offset, &args->value);
 }
 
 static int moduleid_to_index(struct platform_device *dev, u32 moduleid)
@@ -846,8 +698,11 @@ static u32 create_mask(u32 *words, int num)
 {
 	int i;
 	u32 word = 0;
-	for (i = 0; i < num && words[i] && words[i] < 32; i++)
+	for (i = 0; i < num; i++) {
+		if (!words[i] || words[i] > 31)
+			continue;
 		word |= BIT(words[i]);
+	}
 
 	return word;
 }
@@ -856,7 +711,7 @@ static long nvhost_channelctl(struct file *filp,
 	unsigned int cmd, unsigned long arg)
 {
 	struct nvhost_channel_userctx *priv = filp->private_data;
-	struct device *dev = &priv->ch->dev->dev;
+	struct device *dev;
 	u8 buf[NVHOST_IOCTL_CHANNEL_MAX_ARG_SIZE];
 	int err = 0;
 
@@ -871,7 +726,51 @@ static long nvhost_channelctl(struct file *filp,
 			return -EFAULT;
 	}
 
+	if (!priv->ch->dev) {
+		pr_warn("Channel already unmapped\n");
+		return -EFAULT;
+	}
+
+	dev = &priv->ch->dev->dev;
 	switch (cmd) {
+	case NVHOST_IOCTL_CHANNEL_OPEN:
+	{
+		int fd;
+		struct file *file;
+		char *name;
+
+		err = get_unused_fd_flags(O_RDWR);
+		if (err < 0)
+			break;
+		fd = err;
+
+		name = kasprintf(GFP_KERNEL, "nvhost-%s-fd%d",
+				dev_name(dev), fd);
+		if (!name) {
+			err = -ENOMEM;
+			put_unused_fd(fd);
+			break;
+		}
+
+		file = anon_inode_getfile(name, filp->f_op, NULL, O_RDWR);
+		kfree(name);
+		if (IS_ERR(file)) {
+			err = PTR_ERR(file);
+			put_unused_fd(fd);
+			break;
+		}
+		fd_install(fd, file);
+
+		err = __nvhost_channelopen(NULL, priv->ch, file);
+		if (err) {
+			put_unused_fd(fd);
+			fput(file);
+			break;
+		}
+
+		((struct nvhost_channel_open_args *)buf)->channel_fd = fd;
+		break;
+	}
 	case NVHOST_IOCTL_CHANNEL_GET_SYNCPOINTS:
 	{
 		struct nvhost_device_data *pdata = \
@@ -886,10 +785,68 @@ static long nvhost_channelctl(struct file *filp,
 			platform_get_drvdata(priv->ch->dev);
 		struct nvhost_get_param_arg *arg =
 			(struct nvhost_get_param_arg *)buf;
-		if (arg->param >= NVHOST_MODULE_MAX_SYNCPTS
-				|| !pdata->syncpts[arg->param])
+		if (arg->param >= NVHOST_MODULE_MAX_SYNCPTS)
 			return -EINVAL;
-		arg->value = pdata->syncpts[arg->param];
+		/* if we already have required syncpt then return it ... */
+		if (pdata->syncpts[arg->param]) {
+			arg->value = pdata->syncpts[arg->param];
+			break;
+		}
+		/* ... otherwise get a new syncpt dynamically */
+		arg->value = nvhost_get_syncpt_host_managed(pdata->pdev,
+							    arg->param);
+		if (!arg->value)
+			return -EAGAIN;
+		/* ... and store it for further references */
+		pdata->syncpts[arg->param] = arg->value;
+		break;
+	}
+	case NVHOST_IOCTL_CHANNEL_GET_CLIENT_MANAGED_SYNCPOINT:
+	{
+		char name[32];
+		char set_name[32];
+		struct nvhost_device_data *pdata =
+			platform_get_drvdata(priv->ch->dev);
+		struct nvhost_get_client_managed_syncpt_arg *args =
+			(struct nvhost_get_client_managed_syncpt_arg *)buf;
+		const char __user *args_name =
+			(const char __user *)(uintptr_t)args->name;
+
+		if (args_name) {
+			if (strncpy_from_user(name, args_name,
+							sizeof(name)) < 0)
+				return -EFAULT;
+			name[sizeof(name) - 1] = '\0';
+		} else {
+			name[0] = '\0';
+		}
+		/* if we already have required syncpt then return it ... */
+		if (pdata->client_managed_syncpt) {
+			args->value = pdata->client_managed_syncpt;
+			break;
+		}
+		/* ... otherwise get a new syncpt dynamically */
+		snprintf(set_name, sizeof(set_name),
+				"%s_%s", dev_name(&pdata->pdev->dev), name);
+		args->value = nvhost_get_syncpt_client_managed(set_name);
+		if (!args->value)
+			return -EAGAIN;
+		/* ... and store it for further references */
+		pdata->client_managed_syncpt = args->value;
+		break;
+	}
+	case NVHOST_IOCTL_CHANNEL_FREE_CLIENT_MANAGED_SYNCPOINT:
+	{
+		struct nvhost_free_client_managed_syncpt_arg *args =
+			(struct nvhost_free_client_managed_syncpt_arg *)buf;
+		struct nvhost_device_data *pdata =
+			platform_get_drvdata(priv->ch->dev);
+		if (!args->value)
+			break;
+		if (args->value != pdata->client_managed_syncpt)
+			return -EINVAL;
+		nvhost_free_syncpt(args->value);
+		pdata->client_managed_syncpt = 0;
 		break;
 	}
 	case NVHOST_IOCTL_CHANNEL_GET_WAITBASES:
@@ -935,53 +892,6 @@ static long nvhost_channelctl(struct file *filp,
 		break;
 	}
 	case NVHOST_IOCTL_CHANNEL_SET_NVMAP_FD:
-	{
-		int fd = (int)((struct nvhost_set_nvmap_fd_args *)buf)->fd;
-		struct mem_mgr *new_client = nvhost_memmgr_get_mgr_file(fd);
-
-		if (IS_ERR(new_client)) {
-			err = PTR_ERR(new_client);
-			break;
-		}
-		if (priv->memmgr)
-			nvhost_memmgr_put_mgr(priv->memmgr);
-
-		priv->memmgr = new_client;
-
-		if (priv->hwctx)
-			priv->hwctx->memmgr = new_client;
-
-		break;
-	}
-	case NVHOST_IOCTL_CHANNEL_ALLOC_OBJ_CTX:
-		err = nvhost_ioctl_channel_alloc_obj_ctx(priv, (void *)buf);
-		break;
-	case NVHOST_IOCTL_CHANNEL_FREE_OBJ_CTX:
-		err = nvhost_ioctl_channel_free_obj_ctx(priv, (void *)buf);
-		break;
-	case NVHOST_IOCTL_CHANNEL_ALLOC_GPFIFO:
-		err = nvhost_ioctl_channel_alloc_gpfifo(priv, (void *)buf);
-		break;
-	case NVHOST_IOCTL_CHANNEL_SUBMIT_GPFIFO:
-		err = nvhost_ioctl_channel_submit_gpfifo(priv, (void *)buf);
-		break;
-	case NVHOST_IOCTL_CHANNEL_WAIT:
-		err = nvhost_ioctl_channel_wait(priv, (void *)buf);
-		break;
-	case NVHOST_IOCTL_CHANNEL_ZCULL_BIND:
-		err = nvhost_ioctl_channel_zcull_bind(priv, (void *)buf);
-		break;
-	case NVHOST_IOCTL_CHANNEL_SET_ERROR_NOTIFIER:
-		err = nvhost_ioctl_channel_set_error_notifier(priv,
-			(void *)buf);
-		break;
-#if defined(CONFIG_GK20A_CYCLE_STATS)
-	case NVHOST_IOCTL_CHANNEL_CYCLE_STATS:
-		err = nvhost_ioctl_channel_cycle_stats(priv, (void *)buf);
-		break;
-#endif
-	case NVHOST_IOCTL_CHANNEL_READ_3D_REG:
-		err = nvhost_ioctl_channel_read_3d_reg(priv, (void *)buf);
 		break;
 	case NVHOST_IOCTL_CHANNEL_GET_CLK_RATE:
 	{
@@ -1018,7 +928,6 @@ static long nvhost_channelctl(struct file *filp,
 				priv->hwctx->has_timedout;
 		break;
 	case NVHOST_IOCTL_CHANNEL_SET_PRIORITY:
-		nvhost_ioctl_channel_set_priority(priv, (void *)buf);
 		priv->priority =
 			(u32)((struct nvhost_set_priority_args *)buf)->priority;
 		break;
@@ -1069,6 +978,10 @@ static long nvhost_channelctl(struct file *filp,
 	case NVHOST_IOCTL_CHANNEL_SUBMIT:
 		err = nvhost_ioctl_channel_submit(priv, (void *)buf);
 		break;
+	case NVHOST_IOCTL_CHANNEL_SET_ERROR_NOTIFIER:
+		err = nvhost_init_error_notifier(priv->ch,
+			(struct nvhost_set_error_notifier *)buf);
+		break;
 	case NVHOST_IOCTL_CHANNEL_SET_TIMEOUT_EX:
 	{
 		u32 timeout =
@@ -1087,11 +1000,8 @@ static long nvhost_channelctl(struct file *filp,
 		}
 		break;
 	}
-	case NVHOST_IOCTL_CHANNEL_SET_CTXSWITCH:
-		err = nvhost_ioctl_channel_set_ctxswitch(priv, (void *)buf);
-		break;
 	default:
-		nvhost_err(dev, "unrecognized ioctl cmd: 0x%x", cmd);
+		nvhost_dbg_info("unrecognized ioctl cmd: 0x%x", cmd);
 		err = -ENOTTY;
 		break;
 	}
@@ -1128,17 +1038,6 @@ struct nvhost_hwctx *nvhost_channel_get_file_hwctx(int fd)
 	fput(f);
 	return userctx->hwctx;
 }
-
-
-static const struct file_operations nvhost_asops = {
-	.owner = THIS_MODULE,
-	.release = nvhost_as_dev_release,
-	.open = nvhost_as_dev_open,
-#ifdef CONFIG_COMPAT
-	.compat_ioctl = nvhost_as_dev_ctl,
-#endif
-	.unlocked_ioctl = nvhost_as_dev_ctl,
-};
 
 static struct {
 	int class_id;
@@ -1189,11 +1088,10 @@ static const char *get_device_name_for_dev(struct platform_device *dev)
 
 static struct device *nvhost_client_device_create(
 	struct platform_device *pdev, struct cdev *cdev,
-	const char *cdev_name, int devno,
+	const char *cdev_name, dev_t devno,
 	const struct file_operations *ops)
 {
 	struct nvhost_master *host = nvhost_get_host(pdev);
-	struct nvhost_device_data *pdata = nvhost_get_devdata(pdev);
 	const char *use_dev_name;
 	struct device *dev;
 	int err;
@@ -1208,7 +1106,7 @@ static struct device *nvhost_client_device_create(
 	err = cdev_add(cdev, devno, 1);
 	if (err < 0) {
 		dev_err(&pdev->dev,
-			"failed to add chan %i cdev\n", pdata->index);
+			"failed to add cdev\n");
 		return NULL;
 	}
 	use_dev_name = get_device_name_for_dev(pdev);
@@ -1231,33 +1129,26 @@ static struct device *nvhost_client_device_create(
 	return dev;
 }
 
+#define NVHOST_NUM_CDEV 4
 int nvhost_client_user_init(struct platform_device *dev)
 {
-	int err, devno;
+	dev_t devno;
+	int err;
 	struct nvhost_device_data *pdata = platform_get_drvdata(dev);
-	struct nvhost_channel *ch = pdata->channel;
 
-	BUG_ON(!ch);
-	/* reserve 5 minor #s for <dev> and as-<dev>, ctrl-<dev>,
-	 * dbg-<dev> and prof-<dev> */
+	/* reserve 3 minor #s for <dev>, and ctrl-<dev> */
 
-	err = alloc_chrdev_region(&devno, 0, 5, IFACE_NAME);
+	err = alloc_chrdev_region(&devno, 0, NVHOST_NUM_CDEV, IFACE_NAME);
 	if (err < 0) {
 		dev_err(&dev->dev, "failed to allocate devno\n");
 		goto fail;
 	}
+	pdata->cdev_region = devno;
 
-	ch->node = nvhost_client_device_create(dev, &ch->cdev,
+	pdata->node = nvhost_client_device_create(dev, &pdata->cdev,
 				"", devno, &nvhost_channelops);
-	if (ch->node == NULL)
+	if (pdata->node == NULL)
 		goto fail;
-	if (pdata->as_ops) {
-		++devno;
-		ch->as_node = nvhost_client_device_create(dev, &ch->as_cdev,
-					"as-", devno, &nvhost_asops);
-		if (ch->as_node == NULL)
-			goto fail;
-	}
 
 	/* module control (npn-channel based, global) interface */
 	if (pdata->ctrl_ops) {
@@ -1269,28 +1160,6 @@ int nvhost_client_user_init(struct platform_device *dev)
 			goto fail;
 	}
 
-	/* module debugger interface (per channel and global) */
-	if (pdata->dbg_ops) {
-		++devno;
-		pdata->dbg_node = nvhost_client_device_create(dev,
-					&pdata->dbg_cdev, "dbg-",
-					devno, pdata->dbg_ops);
-		if (pdata->dbg_node == NULL)
-			goto fail;
-	}
-
-	/* module profiler interface (per channel and global) */
-	if (pdata->prof_ops) {
-		++devno;
-		pdata->prof_node = nvhost_client_device_create(dev,
-					&pdata->prof_cdev, "prof-",
-					devno, pdata->prof_ops);
-		if (pdata->prof_node == NULL)
-			goto fail;
-	}
-
-
-
 	return 0;
 fail:
 	return err;
@@ -1300,18 +1169,15 @@ void nvhost_client_user_deinit(struct platform_device *dev)
 {
 	struct nvhost_master *nvhost_master = nvhost_get_host(dev);
 	struct nvhost_device_data *pdata = platform_get_drvdata(dev);
-	struct nvhost_channel *ch = pdata->channel;
 
-	BUG_ON(!ch);
-
-	if (ch->node) {
-		device_destroy(nvhost_master->nvhost_class, ch->cdev.dev);
-		cdev_del(&ch->cdev);
+	if (pdata->node) {
+		device_destroy(nvhost_master->nvhost_class, pdata->cdev.dev);
+		cdev_del(&pdata->cdev);
 	}
 
-	if (ch->as_node) {
-		device_destroy(nvhost_master->nvhost_class, ch->as_cdev.dev);
-		cdev_del(&ch->as_cdev);
+	if (pdata->as_node) {
+		device_destroy(nvhost_master->nvhost_class, pdata->as_cdev.dev);
+		cdev_del(&pdata->as_cdev);
 	}
 
 	if (pdata->ctrl_node) {
@@ -1320,46 +1186,25 @@ void nvhost_client_user_deinit(struct platform_device *dev)
 		cdev_del(&pdata->ctrl_cdev);
 	}
 
-	if (pdata->dbg_node) {
-		device_destroy(nvhost_master->nvhost_class,
-			       pdata->dbg_cdev.dev);
-		cdev_del(&pdata->dbg_cdev);
-	}
-
-	if (pdata->prof_node) {
-		device_destroy(nvhost_master->nvhost_class,
-			       pdata->prof_cdev.dev);
-		cdev_del(&pdata->prof_cdev);
-	}
+	unregister_chrdev_region(pdata->cdev_region, NVHOST_NUM_CDEV);
 }
 
 int nvhost_client_device_init(struct platform_device *dev)
 {
 	int err;
 	struct nvhost_master *nvhost_master = nvhost_get_host(dev);
-	struct nvhost_channel *ch;
 	struct nvhost_device_data *pdata = platform_get_drvdata(dev);
 
-	ch = nvhost_alloc_channel(dev);
-	if (ch == NULL)
-		return -ENODEV;
-
-	/* store the pointer to this device for channel */
-	ch->dev = dev;
+	pdata->channels = kzalloc(pdata->num_channels *
+					sizeof(struct nvhost_channel *),
+					GFP_KERNEL);
 
 	/* Create debugfs directory for the device */
 	nvhost_device_debug_init(dev);
 
-	err = nvhost_channel_init(ch, nvhost_master, pdata->index);
-	if (err)
-		goto fail1;
-
 	err = nvhost_client_user_init(dev);
 	if (err)
 		goto fail;
-
-	if (tickctrl_op().init_channel)
-		tickctrl_op().init_channel(dev);
 
 	err = nvhost_device_list_add(dev);
 	if (err)
@@ -1369,7 +1214,10 @@ int nvhost_client_device_init(struct platform_device *dev)
 		pdata->scaling_init(dev);
 
 	/* reset syncpoint values for this unit */
-	nvhost_module_busy(nvhost_master->dev);
+	err = nvhost_module_busy(nvhost_master->dev);
+	if (err)
+		goto fail_busy;
+
 	nvhost_syncpt_reset_client(dev);
 	nvhost_module_idle(nvhost_master->dev);
 
@@ -1390,23 +1238,21 @@ int nvhost_client_device_init(struct platform_device *dev)
 
 	return 0;
 
+fail_busy:
+	/* Remove from nvhost device list */
+	nvhost_device_list_remove(dev);
 fail:
 	/* Add clean-up */
 	dev_err(&dev->dev, "failed to init client device\n");
 	nvhost_client_user_deinit(dev);
-fail1:
 	nvhost_device_debug_deinit(dev);
-	nvhost_free_channel(ch);
 	return err;
 }
 EXPORT_SYMBOL(nvhost_client_device_init);
 
 int nvhost_client_device_release(struct platform_device *dev)
 {
-	struct nvhost_channel *ch;
 	struct nvhost_device_data *pdata = platform_get_drvdata(dev);
-
-	ch = pdata->channel;
 
 	/* Release nvhost module resources */
 	nvhost_module_deinit(dev);
@@ -1420,8 +1266,8 @@ int nvhost_client_device_release(struct platform_device *dev)
 	/* Remove debugFS */
 	nvhost_device_debug_deinit(dev);
 
-	/* Free nvhost channel */
-	nvhost_free_channel(ch);
+	/* Release all nvhost channel of dev*/
+	nvhost_channel_release(pdata);
 
 	return 0;
 }
@@ -1502,3 +1348,4 @@ nvhost_client_request_firmware(struct platform_device *dev, const char *fw_name)
 	/* note: caller must release_firmware */
 	return fw;
 }
+EXPORT_SYMBOL(nvhost_client_request_firmware);

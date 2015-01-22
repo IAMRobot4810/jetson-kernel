@@ -3,7 +3,7 @@
  * Maxim SmartTouch Imager Touchscreen Driver
  *
  * Copyright (c)2013 Maxim Integrated Products, Inc.
- * Copyright (C) 2013, NVIDIA Corporation.  All Rights Reserved.
+ * Copyright (C) 2013-2014, NVIDIA Corporation.  All Rights Reserved.
  *
  * This software is licensed under the terms of the GNU General Public
  * License version 2, as published by the Free Software Foundation, and
@@ -28,6 +28,12 @@
 #include <linux/regulator/consumer.h>
 #include <linux/maxim_sti.h>
 #include <asm/byteorder.h>  /* MUST include this header to get byte order */
+#ifdef CONFIG_OF
+#include <linux/gpio.h>
+#include <linux/of.h>
+#include <linux/of_device.h>
+#include <linux/of_gpio.h>
+#endif
 
 #define CREATE_TRACE_POINTS
 #include <trace/events/touchscreen_maxim.h>
@@ -36,17 +42,23 @@
 * Custom features                                                            *
 \****************************************************************************/
 
-#define INPUT_DEVICES               2
-#define INPUT_ENABLE_DISABLE        1
-#define SUSPEND_POWER_OFF           1
+#define INPUT_DEVICES               1
+#define INPUT_ENABLE_DISABLE        0
+#define FB_CALLBACK                 1
+#define SUSPEND_POWER_OFF           0
+#define DOUBLE_TAP                  0
 #define NV_ENABLE_CPU_BOOST         1
-#define NV_STYLUS_FINGER_EXCLUSION  1
+#define NV_STYLUS_FINGER_EXCLUSION  0
 
 #define ID_FINGER   0
 #define ID_STYLUS   (INPUT_DEVICES - 1)
 
 #if NV_ENABLE_CPU_BOOST
 #define INPUT_IDLE_PERIOD     (msecs_to_jiffies(50))
+#endif
+
+#if FB_CALLBACK && defined(CONFIG_FB)
+#include <linux/fb.h>
 #endif
 
 /****************************************************************************\
@@ -77,7 +89,7 @@ struct dev_data {
 	bool                         last_stylus_active;
 #endif
 	bool                         legacy_acceleration;
-#if INPUT_ENABLE_DISABLE
+#if INPUT_ENABLE_DISABLE || FB_CALLBACK
 	bool                         input_no_deconfig;
 #endif
 	bool                         irq_registered;
@@ -102,6 +114,9 @@ struct dev_data {
 #if NV_ENABLE_CPU_BOOST
 	unsigned long                last_irq_jiffies;
 #endif
+#if FB_CALLBACK
+	struct notifier_block        fb_notifier;
+#endif
 };
 
 atomic_t touch_dvdd_on = ATOMIC_INIT(0);
@@ -110,6 +125,11 @@ static int prev_dvdd_rail_state;
 static struct list_head  dev_list;
 static spinlock_t        dev_lock;
 
+#if DOUBLE_TAP
+static irqreturn_t wake_detect(int irq, void *context);
+#else
+#define wake_detect NULL
+#endif
 static irqreturn_t irq_handler(int irq, void *context);
 static void service_irq(struct dev_data *dd);
 static void service_irq_legacy_acceleration(struct dev_data *dd);
@@ -311,6 +331,7 @@ spi_write_2_page(struct dev_data *dd, u16 address, u8 *buf, u16 len)
 	page[0] = 0xFEDC;
 	page[1] = address << 1;
 	page[2] = len / sizeof(u16);
+	page[3] = 0x0000;
 	memcpy(page + 4, buf, len);
 
 	/* write data with write request header */
@@ -688,6 +709,29 @@ static void start_scan_canned(struct dev_data *dd)
 }
 #endif
 
+#if DOUBLE_TAP
+static void enable_double_tap(struct dev_data *dd)
+{
+	u16 value;
+
+	value = dd->irq_param[20];
+	(void)dd->chip.write(dd, dd->irq_param[19],
+			     (u8 *)&value, sizeof(value));
+
+	value = dd->irq_param[23];
+	(void)dd->chip.write(dd, dd->irq_param[22],
+			     (u8 *)&value, sizeof(value));
+
+	value = dd->irq_param[25];
+	(void)dd->chip.write(dd, dd->irq_param[24],
+			     (u8 *)&value, sizeof(value));
+
+	value = dd->irq_param[14];
+	(void)dd->chip.write(dd, dd->irq_param[12],
+			     (u8 *)&value, sizeof(value));
+}
+#endif
+
 static int regulator_control(struct dev_data *dd, bool on)
 {
 	int ret = 0;
@@ -757,16 +801,167 @@ err_null_regulator:
 	dev_warn(&dd->spi->dev, "Failed to init regulators\n");
 }
 
+#ifdef CONFIG_OF
+#define MAXIM_STI_GPIO_ERROR(ret, gpio, op) \
+{ \
+	if (ret < 0) { \
+		pr_err("%s: GPIO %d %s failed (%d)\n", __func__, gpio, op, \
+			ret); \
+		return ret; \
+	} \
+}
+
+
+int maxim_sti_gpio_init(struct maxim_sti_pdata *pdata, bool init)
+{
+	int  ret;
+
+	if (init) {
+		ret = gpio_request(pdata->gpio_irq, "maxim_sti_irq");
+		MAXIM_STI_GPIO_ERROR(ret, pdata->gpio_irq, "request");
+		ret = gpio_direction_input(pdata->gpio_irq);
+		MAXIM_STI_GPIO_ERROR(ret, pdata->gpio_irq, "direction");
+
+		ret = gpio_request(pdata->gpio_reset, "maxim_sti_reset");
+		MAXIM_STI_GPIO_ERROR(ret, pdata->gpio_reset, "request");
+		ret = gpio_direction_output(pdata->gpio_reset,
+					    pdata->default_reset_state);
+		MAXIM_STI_GPIO_ERROR(ret, pdata->gpio_reset, "direction");
+	} else {
+		gpio_free(pdata->gpio_irq);
+		gpio_free(pdata->gpio_reset);
+	}
+
+	return 0;
+}
+
+void maxim_sti_gpio_reset(struct maxim_sti_pdata *pdata, int value)
+{
+	gpio_set_value(pdata->gpio_reset, !!value);
+}
+
+int maxim_sti_gpio_irq(struct maxim_sti_pdata *pdata)
+{
+	return gpio_get_value(pdata->gpio_irq);
+}
+
+/****************************************************************************\
+* Device Tree Support
+\****************************************************************************/
+
+static int maxim_parse_dt(struct device *dev, struct maxim_sti_pdata *pdata)
+{
+	struct device_node *np = dev->of_node;
+	u32 val;
+	const char *str;
+	int ret;
+
+
+	ret = of_property_read_u32(np, "maxim_sti,reset-gpio",
+						 &pdata->gpio_reset);
+	if (ret) {
+		dev_err(dev, "%s: unable to read reset-gpio (%d)\n",
+							__func__, ret);
+		goto fail;
+	}
+
+	ret = of_property_read_u32(np, "interrupts", &pdata->gpio_irq);
+	if (ret) {
+		dev_err(dev, "%s: unable to read irq-gpio (%d)\n",
+								__func__, ret);
+		goto fail;
+	}
+
+	ret = of_property_read_u32(np, "maxim_sti,nl_mc_groups", &val);
+	if (ret) {
+		dev_err(dev, "%s: unable to read nl_mc_groups (%d)\n",
+								__func__, ret);
+		goto fail;
+	}
+	pdata->nl_mc_groups = (u8)val;
+
+	ret = of_property_read_u32(np, "maxim_sti,chip_access_method", &val);
+	if (ret) {
+		dev_err(dev, "%s: unable to read chip_access_method (%d)\n",
+								__func__, ret);
+		goto fail;
+	}
+	pdata->chip_access_method = (u8)val;
+
+	ret = of_property_read_u32(np, "maxim_sti,default_reset_state", &val);
+	if (ret) {
+		dev_err(dev, "%s: unable to read default_reset_state (%d)\n",
+								__func__, ret);
+		goto fail;
+	}
+	pdata->default_reset_state = (u8)val;
+
+	ret = of_property_read_u32(np, "maxim_sti,tx_buf_size", &val);
+	if (ret) {
+		dev_err(dev, "%s: unable to read tx_buf_size (%d)\n",
+								__func__, ret);
+		goto fail;
+	}
+	pdata->tx_buf_size = (u16)val;
+
+	ret = of_property_read_u32(np, "maxim_sti,rx_buf_size", &val);
+	if (ret) {
+		dev_err(dev, "%s: unable to read rx_buf_size (%d)\n",
+								__func__, ret);
+		goto fail;
+	}
+	pdata->rx_buf_size = (u16)val;
+
+	ret = of_property_read_string(np, "maxim_sti,touch_fusion", &str);
+	if (ret) {
+		dev_err(dev, "%s: unable to read touch_fusion location (%d)\n",
+								__func__, ret);
+		goto fail;
+	}
+	pdata->touch_fusion = (char *)str;
+
+	ret = of_property_read_string(np, "maxim_sti,config_file", &str);
+	if (ret) {
+		dev_err(dev, "%s: unable to read config_file location (%d)\n",
+								__func__, ret);
+		goto fail;
+	}
+	pdata->config_file = (char *)str;
+
+	ret = of_property_read_string(np, "maxim_sti,nl_family", &str);
+	if (ret) {
+		dev_err(dev, "%s: unable to read nl_family (%d)\n",
+								__func__, ret);
+		goto fail;
+	}
+	pdata->nl_family = (char *)str;
+
+	ret = of_property_read_string(np, "maxim_sti,fw_name", &str);
+	if (ret) {
+		dev_err(dev, "%s: unable to read fw_name (%d)\n",
+								__func__, ret);
+	}
+	pdata->fw_name = (char *)str;
+
+	pdata->init = maxim_sti_gpio_init;
+	pdata->reset = maxim_sti_gpio_reset;
+	pdata->irq = maxim_sti_gpio_irq;
+
+	return 0;
+
+fail:
+	return ret;
+}
+#endif
+
 /****************************************************************************\
 * Suspend/resume processing                                                  *
 \****************************************************************************/
 
 #ifdef CONFIG_PM_SLEEP
-static int suspend(struct device *dev)
+static int early_suspend(struct device *dev)
 {
 	struct dev_data  *dd = spi_get_drvdata(to_spi_device(dev));
-	struct maxim_sti_pdata *pdata = dev->platform_data;
-	int ret;
 
 	INFO("suspending...");
 
@@ -777,16 +972,38 @@ static int suspend(struct device *dev)
 	wake_up_process(dd->thread);
 	wait_for_completion(&dd->suspend_resume);
 
-#if SUSPEND_POWER_OFF
-	/* reset-low and power-down */
-	pdata->reset(pdata, 0);
-	usleep_range(100, 120);
-	ret = regulator_control(dd, false);
-	if (ret < 0)
-		return ret;
-#endif
-
 	INFO("suspend...done");
+
+	return 0;
+}
+
+static int late_resume(struct device *dev)
+{
+	struct dev_data  *dd = spi_get_drvdata(to_spi_device(dev));
+
+	INFO("resuming...");
+
+	if (!dd->suspend_in_progress)
+		return 0;
+
+	dd->resume_in_progress = true;
+	wake_up_process(dd->thread);
+	wait_for_completion(&dd->suspend_resume);
+
+	INFO("resume...done");
+
+	return 0;
+}
+
+static int suspend(struct device *dev)
+{
+	struct dev_data  *dd = spi_get_drvdata(to_spi_device(dev));
+
+	if (!dd->irq_registered)
+		return 0;
+
+	disable_irq(dd->spi->irq);
+	enable_irq_wake(dd->spi->irq);
 
 	return 0;
 }
@@ -794,29 +1011,12 @@ static int suspend(struct device *dev)
 static int resume(struct device *dev)
 {
 	struct dev_data  *dd = spi_get_drvdata(to_spi_device(dev));
-	struct maxim_sti_pdata *pdata = dev->platform_data;
-	int ret;
 
-	INFO("resuming...");
-
-	if (!dd->suspend_in_progress)
+	if (!dd->irq_registered)
 		return 0;
 
-#if SUSPEND_POWER_OFF
-	/* power-up and reset-high */
-	pdata->reset(pdata, 0);
-	ret = regulator_control(dd, true);
-	if (ret < 0)
-		return ret;
-	usleep_range(300, 400);
-	pdata->reset(pdata, 1);
-#endif
-
-	dd->resume_in_progress = true;
-	wake_up_process(dd->thread);
-	wait_for_completion(&dd->suspend_resume);
-
-	INFO("resume...done");
+	disable_irq_wake(dd->spi->irq);
+	enable_irq(dd->spi->irq);
 
 	return 0;
 }
@@ -831,14 +1031,33 @@ static int input_disable(struct input_dev *dev)
 {
 	struct dev_data *dd = input_get_drvdata(dev);
 
-	return suspend(&dd->spi->dev);
+	return early_suspend(&dd->spi->dev);
 }
 
 static int input_enable(struct input_dev *dev)
 {
 	struct dev_data *dd = input_get_drvdata(dev);
 
-	return resume(&dd->spi->dev);
+	return late_resume(&dd->spi->dev);
+}
+#endif
+#if FB_CALLBACK && defined(CONFIG_FB)
+static int fb_notifier_callback(struct notifier_block *self,
+				unsigned long event, void *data)
+{
+	struct fb_event  *evdata = data;
+	int              *blank;
+	struct dev_data  *dd = container_of(self,
+					    struct dev_data, fb_notifier);
+
+	if (evdata && evdata->data && event == FB_EVENT_BLANK) {
+		blank = evdata->data;
+		if (*blank == FB_BLANK_UNBLANK)
+			late_resume(&dd->spi->dev);
+		else if (*blank == FB_BLANK_POWERDOWN)
+			early_suspend(&dd->spi->dev);
+	}
+	return 0;
 }
 #endif
 #endif
@@ -887,10 +1106,11 @@ nl_process_driver_msg(struct dev_data *dd, u16 msg_id, void *msg)
 	u8                            i, inp;
 	int                           ret;
 
+#if DOUBLE_TAP || SUSPEND_POWER_OFF
 	if (dd->expect_resume_ack && msg_id != DR_DECONFIG &&
-	    msg_id != DR_RESUME_ACK && msg_id != DR_CONFIG_WATCHDOG &&
-		msg_id != DR_ADD_MC_GROUP && msg_id != DR_ECHO_REQUEST)
+	    msg_id != DR_RESUME_ACK)
 		return false;
+#endif
 
 	switch (msg_id) {
 	case DR_ADD_MC_GROUP:
@@ -983,7 +1203,7 @@ nl_process_driver_msg(struct dev_data *dd, u16 msg_id, void *msg)
 		if (dd->irq_registered)
 			return false;
 		dd->service_irq = service_irq;
-		ret = request_irq(dd->spi->irq, irq_handler,
+		ret = request_threaded_irq(dd->spi->irq, irq_handler, wake_detect,
 			(config_irq_msg->irq_edge == DR_IRQ_RISING_EDGE) ?
 				IRQF_TRIGGER_RISING : IRQF_TRIGGER_FALLING,
 						pdata->nl_family, dd);
@@ -1029,6 +1249,12 @@ nl_process_driver_msg(struct dev_data *dd, u16 msg_id, void *msg)
 				__set_bit(EV_KEY, dd->input_dev[i]->evbit);
 				__set_bit(BTN_TOOL_RUBBER,
 					  dd->input_dev[i]->keybit);
+#if DOUBLE_TAP
+			} else {
+				__set_bit(EV_KEY, dd->input_dev[i]->evbit);
+				__set_bit(KEY_POWER,
+					  dd->input_dev[i]->keybit);
+#endif
 			}
 			input_set_abs_params(dd->input_dev[i],
 					     ABS_MT_POSITION_X, 0,
@@ -1059,11 +1285,14 @@ nl_process_driver_msg(struct dev_data *dd, u16 msg_id, void *msg)
 				ERROR("failed to register input device");
 			}
 		}
+#if FB_CALLBACK && defined(CONFIG_FB)
+		dd->fb_notifier.notifier_call = fb_notifier_callback;
+		fb_register_client(&dd->fb_notifier);
+#endif
 		return false;
 	case DR_CONFIG_WATCHDOG:
 		config_watchdog_msg = msg;
 		dd->fusion_process = (pid_t)config_watchdog_msg->pid;
-		dd->expect_resume_ack = false;
 		return false;
 	case DR_DECONFIG:
 		if (dd->irq_registered) {
@@ -1078,6 +1307,9 @@ nl_process_driver_msg(struct dev_data *dd, u16 msg_id, void *msg)
 				input_unregister_device(dd->input_dev[i]);
 				dd->input_dev[i] = NULL;
 			}
+#if FB_CALLBACK && defined(CONFIG_FB)
+			fb_unregister_client(&dd->fb_notifier);
+#endif
 		}
 #if (INPUT_DEVICES > 1)
 		dd->last_finger_active = false;
@@ -1199,8 +1431,10 @@ nl_process_driver_msg(struct dev_data *dd, u16 msg_id, void *msg)
 		return false;
 	case DR_RESUME_ACK:
 		dd->expect_resume_ack = false;
+#if !DOUBLE_TAP
 		if (dd->irq_registered)
 			enable_irq(dd->spi->irq);
+#endif
 		return false;
 	case DR_LEGACY_FWDL:
 		ret = fw_request_load(dd);
@@ -1327,16 +1561,34 @@ nl_callback_fusion(struct sk_buff *skb, struct genl_info *info)
 * Interrupt processing                                                       *
 \****************************************************************************/
 
+#if DOUBLE_TAP
+static irqreturn_t wake_detect(int irq, void *context)
+{
+	struct dev_data  *dd = context;
+	u16    status;
+	int    ret = 0;
+
+	ret = dd->chip.read(dd, dd->irq_param[0], (u8 *)&status, sizeof(u16));
+	if (status & dd->irq_param[21] && dd->input_dev[ID_FINGER]) {
+		input_report_key(dd->input_dev[ID_FINGER], KEY_POWER, 1);
+		input_sync(dd->input_dev[ID_FINGER]);
+		input_report_key(dd->input_dev[ID_FINGER], KEY_POWER, 0);
+		input_sync(dd->input_dev[ID_FINGER]);
+	}
+
+	return IRQ_HANDLED;
+}
+#endif
+
 static irqreturn_t irq_handler(int irq, void *context)
 {
 	struct dev_data  *dd = context;
 
 	trace_touchscreen_maxim_irq("irq_handler");
 
-#if NV_ENABLE_CPU_BOOST
-	if (time_after(jiffies, dd->last_irq_jiffies + INPUT_IDLE_PERIOD))
-		input_event(dd->input_dev[0], EV_MSC, MSC_ACTIVITY, 1);
-	dd->last_irq_jiffies = jiffies;
+#if DOUBLE_TAP
+	if (unlikely(dd->suspend_in_progress))
+		return IRQ_WAKE_THREAD;
 #endif
 
 	wake_up_process(dd->thread);
@@ -1593,7 +1845,7 @@ static int processing_thread(void *arg)
 			stop_scan_canned(dd);
 			dd->start_fusion = true;
 			dd->fusion_process = (pid_t)0;
-#if INPUT_ENABLE_DISABLE
+#if INPUT_ENABLE_DISABLE || FB_CALLBACK
 			dd->input_no_deconfig = true;
 #endif
 		}
@@ -1624,11 +1876,21 @@ static int processing_thread(void *arg)
 			if (dd->irq_registered)
 				disable_irq(dd->spi->irq);
 			stop_scan_canned(dd);
+#if DOUBLE_TAP
+			enable_double_tap(dd);
+			if (dd->irq_registered)
+				enable_irq(dd->spi->irq);
+#elif SUSPEND_POWER_OFF
+			/* reset-low and power-down */
+			pdata->reset(pdata, 0);
+			usleep_range(100, 120);
+			regulator_control(dd, false);
+#endif
+			dd->expect_resume_ack = true;
 			complete(&dd->suspend_resume);
 
 			INFO("%s: suspended.", __func__);
 
-			dd->expect_resume_ack = true;
 			while (!dd->resume_in_progress) {
 				/* the line below is a MUST */
 				set_current_state(TASK_INTERRUPTIBLE);
@@ -1637,7 +1899,16 @@ static int processing_thread(void *arg)
 
 			INFO("%s: resuming.", __func__);
 
-#if !SUSPEND_POWER_OFF
+#if DOUBLE_TAP || SUSPEND_POWER_OFF
+			/* power-up and reset-high */
+			pdata->reset(pdata, 0);
+#if SUSPEND_POWER_OFF
+			regulator_control(dd, true);
+#endif
+			usleep_range(300, 400);
+			pdata->reset(pdata, 1);
+			usleep_range(300, 400);
+#else
 			start_scan_canned(dd);
 #endif
 			dd->resume_in_progress = false;
@@ -1711,6 +1982,22 @@ static int probe(struct spi_device *spi)
 	unsigned long           flags;
 	int                     ret, i;
 	void                    *ptr;
+
+#ifdef CONFIG_OF
+	if (pdata == NULL && spi->dev.of_node) {
+		pdata = devm_kzalloc(&spi->dev,
+			sizeof(struct maxim_sti_pdata), GFP_KERNEL);
+		if (!pdata) {
+			dev_err(&spi->dev, "failed to allocate memory\n");
+			return -ENOMEM;
+		}
+
+		ret = maxim_parse_dt(&spi->dev, pdata);
+		if (ret)
+			return ret;
+		spi->dev.platform_data = pdata;
+	}
+#endif
 
 	/* validate platform data */
 	if (pdata == NULL || pdata->init == NULL || pdata->reset == NULL ||
@@ -1876,6 +2163,9 @@ static int remove(struct spi_device *spi)
 	for (i = 0; i < INPUT_DEVICES; i++)
 		if (dd->input_dev[i])
 			input_unregister_device(dd->input_dev[i]);
+#if FB_CALLBACK && defined(CONFIG_FB)
+	fb_unregister_client(&dd->fb_notifier);
+#endif
 
 	if (dd->irq_registered)
 		free_irq(dd->spi->irq, dd);
@@ -1920,6 +2210,13 @@ static const struct spi_device_id id[] = {
 
 MODULE_DEVICE_TABLE(spi, id);
 
+#ifdef CONFIG_OF
+static struct of_device_id maxim_match_table[] = {
+	{ .compatible = "maxim,maxim_sti",},
+	{ },
+};
+#endif
+
 static struct spi_driver driver = {
 	.probe          = probe,
 	.remove         = remove,
@@ -1927,8 +2224,11 @@ static struct spi_driver driver = {
 	.id_table       = id,
 	.driver = {
 		.name   = MAXIM_STI_NAME,
+#ifdef CONFIG_OF
+		.of_match_table = maxim_match_table,
+#endif
 		.owner  = THIS_MODULE,
-#if defined(CONFIG_PM_SLEEP) && !INPUT_ENABLE_DISABLE
+#if defined(CONFIG_PM_SLEEP) && DOUBLE_TAP
 		.pm     = &pm_ops,
 #endif
 	},

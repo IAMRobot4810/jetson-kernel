@@ -1,7 +1,7 @@
 /*
  * arch/arm/mach-tegra/board-vcm30_t124-panel.c
  *
- * Copyright (c) 2013, NVIDIA CORPORATION.  All rights reserved.
+ * Copyright (c) 2013-2014, NVIDIA CORPORATION.  All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -25,6 +25,7 @@
 #include <linux/delay.h>
 #include <linux/gpio.h>
 #include <linux/of.h>
+#include <linux/dma-mapping.h>
 
 #include <mach/irqs.h>
 #include <mach/dc.h>
@@ -58,8 +59,8 @@ struct platform_device * __init vcm30_t124_host1x_init(void)
 	return pdev;
 }
 
-/* XXX: EDP is not functionally tested yet */
-static struct resource vcm30_t124_disp1_resources[] = {
+#ifndef CONFIG_TEGRA_HDMI_PRIMARY
+static struct resource vcm30_t124_disp1_dp_resources[] = {
 	{
 		.name	= "irq",
 		.start	= INT_DISPLAY_GENERAL,
@@ -109,8 +110,14 @@ static struct tegra_fb_data vcm30_t124_disp1_fb_data = {
 	.bits_per_pixel = 32,
 };
 
+static struct tegra_dc_sd_settings  sd_settings;
+
 static struct tegra_dc_out vcm30_t124_disp1_out = {
 	.type		= TEGRA_DC_OUT_DP,
+	.sd_settings	= &sd_settings,
+
+	/* eDP max pixel rate to T124 POR */
+	.max_pixclock	= KHZ2PICOS(540000),  /* 540MPix/S 3840x2160@60 */
 };
 
 static struct tegra_dc_platform_data vcm30_t124_disp1_pdata = {
@@ -126,24 +133,35 @@ static struct tegra_dc_platform_data vcm30_t124_disp1_pdata = {
 static struct platform_device vcm30_t124_disp1_device = {
 	.name		= "tegradc",
 	.id		= 0,
-	.resource	= vcm30_t124_disp1_resources,
-	.num_resources	= ARRAY_SIZE(vcm30_t124_disp1_resources),
+	.resource	= vcm30_t124_disp1_dp_resources,
+	.num_resources	= ARRAY_SIZE(vcm30_t124_disp1_dp_resources),
 	.dev = {
 		.platform_data = &vcm30_t124_disp1_pdata,
 	},
 };
+#endif
 
 static struct resource vcm30_t124_disp2_resources[] = {
 	{
 		.name	= "irq",
+#ifndef CONFIG_TEGRA_HDMI_PRIMARY
 		.start	= INT_DISPLAY_B_GENERAL,
 		.end	= INT_DISPLAY_B_GENERAL,
+#else
+		.start	= INT_DISPLAY_GENERAL,
+		.end	= INT_DISPLAY_GENERAL,
+#endif
 		.flags	= IORESOURCE_IRQ,
 	},
 	{
 		.name	= "regs",
+#ifndef CONFIG_TEGRA_HDMI_PRIMARY
 		.start	= TEGRA_DISPLAY2_BASE,
 		.end	= TEGRA_DISPLAY2_BASE + TEGRA_DISPLAY2_SIZE - 1,
+#else
+		.start	= TEGRA_DISPLAY_BASE,
+		.end	= TEGRA_DISPLAY_BASE + TEGRA_DISPLAY_SIZE - 1,
+#endif
 		.flags	= IORESOURCE_MEM,
 	},
 	{
@@ -221,6 +239,24 @@ struct tegra_hdmi_out vcm30_t124_hdmi_out = {
 	.n_tmds_config = ARRAY_SIZE(vcm30_t124_tmds_config),
 };
 
+#ifdef CONFIG_TEGRA_HDMI_PRIMARY
+static struct tegra_dc_mode hdmi_panel_modes[] = {
+	{
+		.pclk =			148500000,
+		.h_ref_to_sync =	1,
+		.v_ref_to_sync =	1,
+		.h_sync_width =		44,	/* hsync_len */
+		.v_sync_width =		5,	/* vsync_len */
+		.h_back_porch =		148,	/* left_margin */
+		.v_back_porch =		36,	/* upper_margin */
+		.h_active =			1280,	/* xres */
+		.v_active =			720,	/* yres */
+		.h_front_porch =	88,	/* right_margin */
+		.v_front_porch =	4,	/* lower_margin */
+	},
+};
+#endif
+
 #define VCM30_T124_HDMI_HPD  TEGRA_GPIO_PN7
 static struct tegra_dc_out vcm30_t124_disp2_out = {
 	.type		= TEGRA_DC_OUT_HDMI,
@@ -228,12 +264,17 @@ static struct tegra_dc_out vcm30_t124_disp2_out = {
 			  TEGRA_DC_OUT_NVHDCP_POLICY_ON_DEMAND,
 	.parent_clk	= "pll_d2",
 
-	.dcc_bus	= 3,
+	.ddc_bus	= 3,
 	.hotplug_gpio	= VCM30_T124_HDMI_HPD,
 	.hdmi_out	= &vcm30_t124_hdmi_out,
 
 	/* TODO: update max pclk to POR */
 	.max_pixclock	= KHZ2PICOS(297000),
+#if defined(CONFIG_TEGRA_HDMI_PRIMARY)
+	.modes = hdmi_panel_modes,
+	.n_modes = ARRAY_SIZE(hdmi_panel_modes),
+	.depth = 24,
+#endif /* CONFIG_FRAMEBUFFER_CONSOLE */
 
 	.align		= TEGRA_DC_ALIGN_MSB,
 	.order		= TEGRA_DC_ORDER_RED_BLUE,
@@ -259,7 +300,11 @@ static struct tegra_dc_platform_data vcm30_t124_disp2_pdata = {
 
 static struct platform_device vcm30_t124_disp2_device = {
 	.name		= "tegradc",
+#ifndef CONFIG_TEGRA_HDMI_PRIMARY
 	.id		= 1,
+#else
+	.id		= 0,
+#endif
 	.resource	= vcm30_t124_disp2_resources,
 	.num_resources	= ARRAY_SIZE(vcm30_t124_disp2_resources),
 	.dev = {
@@ -273,18 +318,21 @@ static struct nvmap_platform_carveout vcm30_t124_carveouts[] = {
 		.usage_mask	= NVMAP_HEAP_CARVEOUT_IRAM,
 		.base		= TEGRA_IRAM_BASE + TEGRA_RESET_HANDLER_SIZE,
 		.size		= TEGRA_IRAM_SIZE - TEGRA_RESET_HANDLER_SIZE,
+		.dma_dev	= &tegra_iram_dev,
 	},
 	[1] = {
 		.name		= "generic-0",
 		.usage_mask	= NVMAP_HEAP_CARVEOUT_GENERIC,
 		.base		= 0, /* Filled in by vcm30_t124_panel_init() */
 		.size		= 0, /* Filled in by vcm30_t124_panel_init() */
+		.dma_dev	= &tegra_generic_dev,
 	},
 	[2] = {
 		.name		= "vpr",
 		.usage_mask	= NVMAP_HEAP_CARVEOUT_VPR,
 		.base		= 0, /* Filled in by vcm30_t124_panel_init() */
 		.size		= 0, /* Filled in by vcm30_t124_panel_init() */
+		.dma_dev	= &tegra_vpr_dev,
 	},
 };
 
@@ -300,17 +348,105 @@ static struct platform_device vcm30_t124_nvmap_device  = {
 	},
 };
 
+
+#ifndef CONFIG_TEGRA_HDMI_PRIMARY
+static void __init vcm30_t124_panel_select(void)
+{
+	struct tegra_panel *panel = NULL;
+
+	/* for eDP */
+	panel = &edp_a_1080p_14_0;
+	vcm30_t124_disp1_out.type = TEGRA_DC_OUT_DP;
+	vcm30_t124_disp1_device.resource = vcm30_t124_disp1_dp_resources;
+	vcm30_t124_disp1_device.num_resources =
+		ARRAY_SIZE(vcm30_t124_disp1_dp_resources);
+
+	if (panel) {
+		if (panel->init_sd_settings)
+			panel->init_sd_settings(&sd_settings);
+
+		if (panel->init_dc_out)
+			panel->init_dc_out(&vcm30_t124_disp1_out);
+
+		if (panel->init_fb_data)
+			panel->init_fb_data(&vcm30_t124_disp1_fb_data);
+
+		if (panel->init_cmu_data)
+			panel->init_cmu_data(&vcm30_t124_disp1_pdata);
+
+		if (panel->set_disp_device)
+			panel->set_disp_device(&vcm30_t124_disp1_device);
+
+		if (panel->register_bl_dev)
+			panel->register_bl_dev();
+
+		if (panel->register_i2c_bridge)
+			panel->register_i2c_bridge();
+	}
+
+}
+#endif
+
 int __init vcm30_t124_panel_init(void)
 {
 	int err = 0;
 	struct resource *res;
 	struct platform_device *phost1x = NULL;
+#ifdef CONFIG_NVMAP_USE_CMA_FOR_CARVEOUT
+	struct dma_declare_info vpr_dma_info;
+	struct dma_declare_info generic_dma_info;
+#endif
+
+#ifndef CONFIG_TEGRA_HDMI_PRIMARY
+	vcm30_t124_panel_select();
+#endif
 
 #ifdef CONFIG_TEGRA_NVMAP
 	vcm30_t124_carveouts[1].base = tegra_carveout_start;
 	vcm30_t124_carveouts[1].size = tegra_carveout_size;
+
 	vcm30_t124_carveouts[2].base = tegra_vpr_start;
 	vcm30_t124_carveouts[2].size = tegra_vpr_size;
+
+#ifdef CONFIG_NVMAP_USE_CMA_FOR_CARVEOUT
+	generic_dma_info.name = "generic";
+	generic_dma_info.base = tegra_carveout_start;
+	generic_dma_info.size = tegra_carveout_size;
+	generic_dma_info.resize = false;
+	generic_dma_info.cma_dev = NULL;
+
+	vpr_dma_info.name = "vpr";
+	vpr_dma_info.base = tegra_vpr_start;
+	vpr_dma_info.size = tegra_vpr_size;
+	vpr_dma_info.resize = false;
+	vpr_dma_info.cma_dev = NULL;
+	vcm30_t124_carveouts[1].cma_dev = &tegra_generic_cma_dev;
+	vcm30_t124_carveouts[1].resize = false;
+	vcm30_t124_carveouts[2].cma_dev = &tegra_vpr_cma_dev;
+	vcm30_t124_carveouts[2].resize = true;
+
+	vpr_dma_info.size = SZ_32M;
+	vpr_dma_info.resize = true;
+	vpr_dma_info.cma_dev = &tegra_vpr_cma_dev;
+	vpr_dma_info.notifier.ops = &vpr_dev_ops;
+
+	if (tegra_carveout_size) {
+		err = dma_declare_coherent_resizable_cma_memory(
+				&tegra_generic_dev, &generic_dma_info);
+		if (err) {
+			pr_err("Generic coherent memory declaration failed\n");
+			return err;
+		}
+	}
+	if (tegra_vpr_size) {
+		err = dma_declare_coherent_resizable_cma_memory(
+				&tegra_vpr_dev, &vpr_dma_info);
+		if (err) {
+			pr_err("VPR coherent memory declaration failed\n");
+			return err;
+		}
+	}
+#endif
 
 	err = platform_device_register(&vcm30_t124_nvmap_device);
 	if (err) {
@@ -325,22 +461,41 @@ int __init vcm30_t124_panel_init(void)
 		return -EINVAL;
 	}
 
+#ifndef CONFIG_TEGRA_HDMI_PRIMARY
 	res = platform_get_resource_byname(&vcm30_t124_disp1_device,
 					 IORESOURCE_MEM, "fbmem");
+#else
+	res = platform_get_resource_byname(&vcm30_t124_disp2_device,
+					 IORESOURCE_MEM, "fbmem");
+#endif
 	res->start = tegra_fb_start;
 	res->end = tegra_fb_start + tegra_fb_size - 1;
 
-	/* Copy the bootloader fb to the fb. */
-	__tegra_move_framebuffer(&vcm30_t124_nvmap_device,
-		tegra_fb_start, tegra_bootloader_fb_start,
+	/* clear FB for both DC and copy the bootloader FB */
+	__tegra_clear_framebuffer(&vcm30_t124_nvmap_device,
+		tegra_fb_start, tegra_fb_size);
+	if (tegra_bootloader_fb_size)
+		__tegra_move_framebuffer(&vcm30_t124_nvmap_device,
+			tegra_fb_start, tegra_bootloader_fb_start,
 			min(tegra_fb_size, tegra_bootloader_fb_size));
+	if (tegra_fb2_size) {
+		__tegra_clear_framebuffer(&vcm30_t124_nvmap_device,
+			tegra_fb2_start, tegra_fb2_size);
+		if (tegra_bootloader_fb2_size)
+			__tegra_move_framebuffer(&vcm30_t124_nvmap_device,
+				tegra_fb2_start, tegra_bootloader_fb2_start,
+				min(tegra_fb2_size,
+					 tegra_bootloader_fb2_size));
+	}
 
+#ifndef CONFIG_TEGRA_HDMI_PRIMARY
 	vcm30_t124_disp1_device.dev.parent = &phost1x->dev;
 	err = platform_device_register(&vcm30_t124_disp1_device);
 	if (err) {
 		pr_err("disp1 device registration failed\n");
 		return err;
 	}
+#endif
 
 	err = tegra_init_hdmi(&vcm30_t124_disp2_device, phost1x);
 	if (err)

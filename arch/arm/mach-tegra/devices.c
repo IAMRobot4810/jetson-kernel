@@ -5,7 +5,7 @@
  *	Colin Cross <ccross@android.com>
  *	Erik Gilling <ccross@android.com>
  *
- * Copyright (c) 2010-2013, NVIDIA CORPORATION.  All rights reserved.
+ * Copyright (c) 2010-2014, NVIDIA CORPORATION.  All rights reserved.
  *
  * This software is licensed under the terms of the GNU General Public
  * License version 2, as published by the Free Software Foundation, and
@@ -23,7 +23,6 @@
 #include <linux/dma-mapping.h>
 #include <linux/fsl_devices.h>
 #include <linux/serial_8250.h>
-#include <linux/i2c-tegra.h>
 #include <linux/mipi-bif-tegra.h>
 #include <linux/platform_data/tegra_usb.h>
 #include <linux/tegra_avp.h>
@@ -347,348 +346,6 @@ struct platform_device tegra_apbdma = {
 	.resource	= apbdma_resource,
 	.num_resources	= ARRAY_SIZE(apbdma_resource),
 };
-
-static struct resource i2c_resource1[] = {
-	[0] = {
-		.start	= INT_I2C,
-		.end	= INT_I2C,
-		.flags	= IORESOURCE_IRQ,
-	},
-	[1] = {
-		.start	= TEGRA_I2C_BASE,
-		.end	= TEGRA_I2C_BASE + TEGRA_I2C_SIZE-1,
-		.flags	= IORESOURCE_MEM,
-	},
-};
-
-static struct resource i2c_resource2[] = {
-	[0] = {
-		.start	= INT_I2C2,
-		.end	= INT_I2C2,
-		.flags	= IORESOURCE_IRQ,
-	},
-	[1] = {
-		.start	= TEGRA_I2C2_BASE,
-		.end	= TEGRA_I2C2_BASE + TEGRA_I2C2_SIZE-1,
-		.flags	= IORESOURCE_MEM,
-	},
-};
-
-static struct resource i2c_resource3[] = {
-	[0] = {
-		.start	= INT_I2C3,
-		.end	= INT_I2C3,
-		.flags	= IORESOURCE_IRQ,
-	},
-	[1] = {
-		.start	= TEGRA_I2C3_BASE,
-		.end	= TEGRA_I2C3_BASE + TEGRA_I2C3_SIZE-1,
-		.flags	= IORESOURCE_MEM,
-	},
-};
-
-#ifdef CONFIG_ARCH_TEGRA_2x_SOC
-static struct resource i2c_resource4[] = {
-	[0] = {
-		.start	= INT_DVC,
-		.end	= INT_DVC,
-		.flags	= IORESOURCE_IRQ,
-	},
-	[1] = {
-		.start	= TEGRA_DVC_BASE,
-		.end	= TEGRA_DVC_BASE + TEGRA_DVC_SIZE-1,
-		.flags	= IORESOURCE_MEM,
-	},
-};
-
-#else
-static struct resource i2c_resource4[] = {
-	[0] = {
-		.start  = INT_I2C4,
-		.end    = INT_I2C4,
-		.flags  = IORESOURCE_IRQ,
-	},
-	[1] = {
-		.start	= TEGRA_I2C4_BASE,
-		.end	= TEGRA_I2C4_BASE + TEGRA_I2C4_SIZE-1,
-		.flags	= IORESOURCE_MEM,
-	},
-};
-
-static struct resource i2c_resource5[] = {
-	[0] = {
-		.start  = INT_I2C5,
-		.end    = INT_I2C5,
-		.flags  = IORESOURCE_IRQ,
-	},
-	[1] = {
-		.start	= TEGRA_I2C5_BASE,
-		.end	= TEGRA_I2C5_BASE + TEGRA_I2C5_SIZE-1,
-		.flags	= IORESOURCE_MEM,
-	},
-};
-#endif
-
-#if defined(CONFIG_ARCH_TEGRA_14x_SOC) || defined(CONFIG_ARCH_TEGRA_12x_SOC)
-static struct resource i2c_resource6[] = {
-	[0] = {
-		.start  = INT_I2C6,
-		.end    = INT_I2C6,
-		.flags  = IORESOURCE_IRQ,
-	},
-	[1] = {
-		.start	= TEGRA_I2C6_BASE,
-		.end	= TEGRA_I2C6_BASE + TEGRA_I2C6_SIZE-1,
-		.flags	= IORESOURCE_MEM,
-	},
-};
-#endif
-
-static struct tegra_i2c_platform_data tegra_i2c1_platform_data = {
-	.bus_clk_rate   = 400000,
-};
-
-static struct tegra_i2c_platform_data tegra_i2c2_platform_data = {
-	.bus_clk_rate   = 400000,
-};
-
-static struct tegra_i2c_platform_data tegra_i2c3_platform_data = {
-	.bus_clk_rate   = 400000,
-};
-
-static struct tegra_i2c_platform_data tegra_dvc_platform_data = {
-	.bus_clk_rate   = 400000,
-};
-
-struct platform_device tegra_i2c_device1 = {
-	.name		= "tegra-i2c",
-	.id		= 0,
-	.resource	= i2c_resource1,
-	.num_resources	= ARRAY_SIZE(i2c_resource1),
-	.dev = {
-		.platform_data = &tegra_i2c1_platform_data,
-	},
-};
-
-struct platform_device tegra_i2c_device2 = {
-	.name		= "tegra-i2c",
-	.id		= 1,
-	.resource	= i2c_resource2,
-	.num_resources	= ARRAY_SIZE(i2c_resource2),
-	.dev = {
-		.platform_data = &tegra_i2c2_platform_data,
-	},
-};
-
-struct platform_device tegra_i2c_device3 = {
-	.name		= "tegra-i2c",
-	.id		= 2,
-	.resource	= i2c_resource3,
-	.num_resources	= ARRAY_SIZE(i2c_resource3),
-	.dev = {
-		.platform_data = &tegra_i2c3_platform_data,
-	},
-};
-
-struct platform_device tegra_i2c_device4 = {
-	.name		= "tegra-i2c",
-	.id		= 3,
-	.resource	= i2c_resource4,
-	.num_resources	= ARRAY_SIZE(i2c_resource4),
-	.dev = {
-		.platform_data = &tegra_dvc_platform_data,
-	},
-};
-
-#ifndef CONFIG_ARCH_TEGRA_2x_SOC
-struct platform_device tegra_i2c_device5 = {
-	.name		= "tegra-i2c",
-	.id		= 4,
-	.resource	= i2c_resource5,
-	.num_resources	= ARRAY_SIZE(i2c_resource5),
-	.dev = {
-		.platform_data = 0,
-	},
-};
-#endif
-
-struct platform_device tegra11_i2c_device1 = {
-	.name		= "tegra11-i2c",
-	.id		= 0,
-	.resource	= i2c_resource1,
-	.num_resources	= ARRAY_SIZE(i2c_resource1),
-	.dev = {
-		.platform_data = 0,
-	},
-};
-
-struct platform_device tegra11_i2c_device2 = {
-	.name		= "tegra11-i2c",
-	.id		= 1,
-	.resource	= i2c_resource2,
-	.num_resources	= ARRAY_SIZE(i2c_resource2),
-	.dev = {
-		.platform_data = 0,
-	},
-};
-
-struct platform_device tegra11_i2c_device3 = {
-	.name		= "tegra11-i2c",
-	.id		= 2,
-	.resource	= i2c_resource3,
-	.num_resources	= ARRAY_SIZE(i2c_resource3),
-	.dev = {
-		.platform_data = 0,
-	},
-};
-
-struct platform_device tegra11_i2c_device4 = {
-	.name		= "tegra11-i2c",
-	.id		= 3,
-	.resource	= i2c_resource4,
-	.num_resources	= ARRAY_SIZE(i2c_resource4),
-	.dev = {
-		.platform_data = 0,
-	},
-};
-
-#ifndef CONFIG_ARCH_TEGRA_2x_SOC
-struct platform_device tegra11_i2c_device5 = {
-	.name		= "tegra11-i2c",
-	.id		= 4,
-	.resource	= i2c_resource5,
-	.num_resources	= ARRAY_SIZE(i2c_resource5),
-	.dev = {
-		.platform_data = 0,
-	},
-};
-#endif
-
-#if defined(CONFIG_ARCH_TEGRA_14x_SOC)
-
-struct platform_device tegra14_i2c_device1 = {
-	.name		= "tegra14-i2c",
-	.id		= 0,
-	.resource	= i2c_resource1,
-	.num_resources	= ARRAY_SIZE(i2c_resource1),
-	.dev = {
-		.platform_data = 0,
-	},
-};
-
-struct platform_device tegra14_i2c_device2 = {
-	.name		= "tegra14-i2c",
-	.id		= 1,
-	.resource	= i2c_resource2,
-	.num_resources	= ARRAY_SIZE(i2c_resource2),
-	.dev = {
-		.platform_data = 0,
-	},
-};
-
-struct platform_device tegra14_i2c_device3 = {
-	.name		= "tegra14-i2c",
-	.id		= 2,
-	.resource	= i2c_resource3,
-	.num_resources	= ARRAY_SIZE(i2c_resource3),
-	.dev = {
-		.platform_data = 0,
-	},
-};
-
-struct platform_device tegra14_i2c_device4 = {
-	.name		= "tegra14-i2c",
-	.id		= 3,
-	.resource	= i2c_resource4,
-	.num_resources	= ARRAY_SIZE(i2c_resource4),
-	.dev = {
-		.platform_data = 0,
-	},
-};
-
-struct platform_device tegra14_i2c_device5 = {
-	.name		= "tegra14-i2c",
-	.id		= 4,
-	.resource	= i2c_resource5,
-	.num_resources	= ARRAY_SIZE(i2c_resource5),
-	.dev = {
-		.platform_data = 0,
-	},
-};
-
-struct platform_device tegra14_i2c_device6 = {
-	.name		= "tegra14-i2c",
-	.id		= 5,
-	.resource	= i2c_resource6,
-	.num_resources	= ARRAY_SIZE(i2c_resource6),
-	.dev = {
-		.platform_data = 0,
-	},
-};
-
-#endif
-
-#if defined(CONFIG_ARCH_TEGRA_12x_SOC)
-struct platform_device tegra12_i2c_device1 = {
-	.name		= "tegra12-i2c",
-	.id		= 0,
-	.resource	= i2c_resource1,
-	.num_resources	= ARRAY_SIZE(i2c_resource1),
-	.dev = {
-		.platform_data = 0,
-	},
-};
-
-struct platform_device tegra12_i2c_device2 = {
-	.name		= "tegra12-i2c",
-	.id		= 1,
-	.resource	= i2c_resource2,
-	.num_resources	= ARRAY_SIZE(i2c_resource2),
-	.dev = {
-		.platform_data = 0,
-	},
-};
-
-struct platform_device tegra12_i2c_device3 = {
-	.name		= "tegra12-i2c",
-	.id		= 2,
-	.resource	= i2c_resource3,
-	.num_resources	= ARRAY_SIZE(i2c_resource3),
-	.dev = {
-		.platform_data = 0,
-	},
-};
-
-struct platform_device tegra12_i2c_device4 = {
-	.name		= "tegra12-i2c",
-	.id		= 3,
-	.resource	= i2c_resource4,
-	.num_resources	= ARRAY_SIZE(i2c_resource4),
-	.dev = {
-		.platform_data = 0,
-	},
-};
-
-struct platform_device tegra12_i2c_device5 = {
-	.name		= "tegra12-i2c",
-	.id		= 4,
-	.resource	= i2c_resource5,
-	.num_resources	= ARRAY_SIZE(i2c_resource5),
-	.dev = {
-		.platform_data = 0,
-	},
-};
-
-struct platform_device tegra12_i2c_device6 = {
-	.name		= "tegra12-i2c",
-	.id		= 5,
-	.resource	= i2c_resource6,
-	.num_resources	= ARRAY_SIZE(i2c_resource6),
-	.dev = {
-		.platform_data = 0,
-	},
-};
-#endif
 
 #if defined(CONFIG_ARCH_TEGRA_14x_SOC)
 
@@ -1889,6 +1546,16 @@ struct platform_device tegra_tdm_pcm_device = {
 	.id = -1,
 };
 
+struct platform_device tegra_offload_device = {
+	.name = "tegra-offload",
+	.id = -1,
+};
+
+struct platform_device tegra30_avp_audio_device = {
+	.name = "tegra30-avp-audio",
+	.id = -1,
+};
+
 static struct resource w1_resources[] = {
 	[0] = {
 		.start = INT_OWR,
@@ -2029,7 +1696,7 @@ struct platform_device tegra_gart_device = {
 };
 #endif
 
-#if defined(CONFIG_TEGRA_IOVMM_SMMU) || defined(CONFIG_TEGRA_IOMMU_SMMU)
+#if defined(CONFIG_TEGRA_IOMMU_SMMU)
 static struct resource tegra_smmu_resources[] = {
 	{
 		.name	= "mc",
@@ -2095,7 +1762,7 @@ void tegra_fb_linear_set(struct iommu_linear_map *map)
 #endif
 }
 
-#ifdef CONFIG_NVMAP_USE_CMA_FOR_CARVEOUT
+#ifdef CONFIG_CMA
 void carveout_linear_set(struct device *cma_dev)
 {
 	struct dma_contiguous_stats stats;
@@ -2145,7 +1812,10 @@ struct swgid_fixup tegra_swgid_fixup[] = {
 	{ .name = "mpe",	.swgids = SWGID(MPE), },
 	{ .name = "tegra-aes",	.swgids = SWGID(VDE), },
 	{ .name = "nvavp",	.swgids = SWGID(AVPC), },
-	{ .name = "sdhci-tegra",	.swgids = SWGID(PPCS), },
+	{ .name = "sdhci-tegra.0",	.swgids = SWGID(PPCS1) },
+	{ .name = "sdhci-tegra.1",	.swgids = SWGID(PPCS1) },
+	{ .name = "sdhci-tegra.2",	.swgids = SWGID(PPCS1) },
+	{ .name = "sdhci-tegra.3",	.swgids = SWGID(PPCS1) },
 	{ .name = "serial8250",	.swgids = SWGID(PPCS), },
 	{ .name = "serial-tegra",      .swgids = SWGID(PPCS), },
 	{ .name = "snd-soc-dummy",	.swgids = SWGID(PPCS), },
@@ -2158,6 +1828,7 @@ struct swgid_fixup tegra_swgid_fixup[] = {
 	{ .name = "tegra30-hda",	.swgids = SWGID(HDA), },
 	{ .name = "tegra30-i2s",	.swgids = SWGID(PPCS), },
 	{ .name = "tegra30-spdif",	.swgids = SWGID(PPCS), },
+	{ .name = "tegra30-avp-audio",	.swgids = SWGID(AVPC), },
 	{ .name = "tegradc.0", .swgids = SWGID(DC),
 	  .linear_map = tegra_fb_linear_map},
 	{ .name = "tegradc.1", .swgids = SWGID(DCB), },
@@ -2213,6 +1884,7 @@ struct swgid_fixup tegra_swgid_fixup_t124[] = {
 	{ .name = "tegra30-hda",	.swgids = SWGID(HDA), },
 	{ .name = "tegra30-i2s",	.swgids = SWGID(PPCS), },
 	{ .name = "tegra30-spdif",	.swgids = SWGID(PPCS), },
+	{ .name = "tegra30-avp-audio",	.swgids = SWGID(AVPC) | SWGID(A9AVP), },
 	{ .name = "tegradc.0", .swgids = SWGID(DC) | SWGID(DC12),
 	  .linear_map = tegra_fb_linear_map, },
 	{ .name = "tegradc.1", .swgids = SWGID(DCB),
@@ -2223,7 +1895,12 @@ struct swgid_fixup tegra_swgid_fixup_t124[] = {
 	{ .name = "tegra-fuse",	.swgids = SWGID(PPCS), },
 	{ .name = "tegra-i2c",	.swgids = SWGID(PPCS), },
 	{ .name = "tegra-nvmap",	.swgids = SWGID(HC) | SWGID(AVPC), },
-	{ .name = "tegra-otg",	.swgids = SWGID(PPCS), },
+	/*
+	 * PPCS1 selection for USB2 needs AHB_ARBC register program
+	 * in warm boot and cold boot paths in BL as it needs
+	 * secure write.
+	 */
+	{ .name = "tegra-otg",	.swgids = SWGID(PPCS1), },
 	{ .name = "tegra-pcm-audio",	.swgids = SWGID(PPCS), },
 	{ .name = "tegra-rtc",	.swgids = SWGID(PPCS), },
 	{ .name = "tegra-sata",	.swgids = SWGID(SATA2), },
@@ -2251,13 +1928,20 @@ struct swgid_fixup tegra_swgid_fixup_t124[] = {
 u64 tegra_smmu_fixup_swgids(struct device *dev, struct iommu_linear_map **map)
 {
 	const char *s;
-	struct swgid_fixup *table = tegra_swgid_fixup;
+	struct swgid_fixup *table;
 
 	if (!dev)
 		return 0;
 
-	if (tegra_get_chipid() == TEGRA_CHIPID_TEGRA12)
+	switch (tegra_get_chipid()) {
+	case TEGRA_CHIPID_TEGRA12:
+	case TEGRA_CHIPID_TEGRA13:
 		table = tegra_swgid_fixup_t124;
+		break;
+	default:
+		table = tegra_swgid_fixup;
+		break;
+	}
 
 	while ((s = table->name) != NULL) {
 		if (!strncmp(s, dev_name(dev), strlen(s))) {
@@ -2283,10 +1967,15 @@ struct tegra_iommu_mapping {
 static struct tegra_iommu_mapping smmu_default_map[] = {
 	[SYSTEM_DEFAULT] = {TEGRA_IOMMU_BASE, TEGRA_IOMMU_SIZE},
 	[SYSTEM_PROTECTED] = {TEGRA_IOMMU_BASE, TEGRA_IOMMU_SIZE},
+	[PPCS1_ASID] = {TEGRA_IOMMU_BASE, TEGRA_IOMMU_SIZE},
 	[SYSTEM_DC] = {0x10000, (u32)~0},
 	[SYSTEM_DCB] = {0x10000, (u32)~0},
 	/* Non-zero base to account for gk20a driver's assumptions */
 	[SYSTEM_GK20A] = {0x100000, (u32)~0},
+	[SDMMC1A_ASID] = {TEGRA_IOMMU_BASE, TEGRA_IOMMU_SIZE},
+	[SDMMC2A_ASID] = {TEGRA_IOMMU_BASE, TEGRA_IOMMU_SIZE},
+	[SDMMC3A_ASID] = {TEGRA_IOMMU_BASE, TEGRA_IOMMU_SIZE},
+	[SDMMC4A_ASID] = {TEGRA_IOMMU_BASE, TEGRA_IOMMU_SIZE},
 };
 
 static void tegra_smmu_map_init(struct platform_device *pdev)
@@ -2343,6 +2032,14 @@ static int _tegra_smmu_get_asid(u64 swgids)
 {
 	if (swgids & SWGID(PPCS))
 		return SYSTEM_PROTECTED;
+#if defined(CONFIG_ARCH_TEGRA_12x_SOC) || \
+	defined(CONFIG_ARCH_TEGRA_11x_SOC)
+	if (swgids & SWGID(PPCS1))
+		return PPCS1_ASID;
+#else
+	if (swgids & SWGID(PPCS1))
+		return SYSTEM_PROTECTED;
+#endif
 
 	if (swgids & SWGID(GPUB))
 		return SYSTEM_GK20A;
@@ -2357,6 +2054,14 @@ static int _tegra_smmu_get_asid(u64 swgids)
 		return SYSTEM_DC;
 	if (swgids & SWGID(DCB))
 		return SYSTEM_DCB;
+	if (swgids & SWGID(SDMMC1A))
+		return SDMMC1A_ASID;
+	if (swgids & SWGID(SDMMC2A))
+		return SDMMC2A_ASID;
+	if (swgids & SWGID(SDMMC3A))
+		return SDMMC3A_ASID;
+	if (swgids & SWGID(SDMMC4A))
+		return SDMMC4A_ASID;
 #endif
 
 	return SYSTEM_DEFAULT;
@@ -2454,7 +2159,7 @@ static struct resource tegra_wdt0_resources[] = {
 		.flags	= IORESOURCE_MEM,
 	},
 #endif
-#if defined(CONFIG_TEGRA_USE_SECURE_KERNEL) && \
+#if defined(CONFIG_TRUSTED_LITTLE_KERNEL) && \
 	defined(CONFIG_ARCH_TEGRA_12x_SOC) && defined(CONFIG_FIQ_DEBUGGER)
 	[5] = {
 		.start  = TEGRA_WDT4_BASE,
@@ -2477,19 +2182,6 @@ struct platform_device tegra_wdt0_device = {
 };
 
 #endif
-
-static struct resource tegra_pwfm_resource = {
-	.start	= TEGRA_PWFM_BASE,
-	.end	= TEGRA_PWFM_BASE + TEGRA_PWFM_SIZE - 1,
-	.flags	= IORESOURCE_MEM,
-};
-
-struct platform_device tegra_pwfm_device = {
-	.name		= "tegra-pwm",
-	.id		= -1,
-	.num_resources	= 1,
-	.resource	= &tegra_pwfm_resource,
-};
 
 static struct tegra_avp_platform_data tegra_avp_pdata = {
 #ifdef CONFIG_ARCH_TEGRA_2x_SOC
@@ -2796,11 +2488,24 @@ struct platform_device tegra_cec_device = {
 
 #ifdef CONFIG_ARCH_TEGRA_HAS_CL_DVFS
 static struct resource cl_dvfs_resource[] = {
+#ifndef CONFIG_ARCH_TEGRA_13x_SOC
 	[0] = {
 		.start	= TEGRA_CL_DVFS_BASE,
 		.end	= TEGRA_CL_DVFS_BASE + TEGRA_CL_DVFS_SIZE-1,
 		.flags	= IORESOURCE_MEM,
-	}
+	},
+#else
+	[0] = {
+		.start	= TEGRA_CLK13_RESET_BASE + 0x84,
+		.end	= TEGRA_CLK13_RESET_BASE + 0x84 + TEGRA_CL_DVFS_SIZE-1,
+		.flags	= IORESOURCE_MEM,
+	},
+	[1] = {
+		.start	= TEGRA_CL_DVFS_BASE,
+		.end	= TEGRA_CL_DVFS_BASE + TEGRA_CL_DVFS_SIZE-1,
+		.flags	= IORESOURCE_MEM,
+	},
+#endif
 };
 
 struct platform_device tegra_cl_dvfs_device = {
@@ -2900,3 +2605,30 @@ void __init tegra_init_debug_uart_rate(void)
 	debug_uarte_platform_data[0].uartclk = uartclk;
 #endif
 }
+
+#if !defined(CONFIG_ARCH_TEGRA_2x_SOC) && !defined(CONFIG_ARCH_TEGRA_3x_SOC)
+static struct resource tegra_hier_ictlr_resource[] = {
+	[0] = {
+		.start	= TEGRA_HIER2_ICTLR1_BASE,
+		.end	= TEGRA_HIER2_ICTLR1_BASE + TEGRA_HIER2_ICTLR1_SIZE - 1,
+		.flags	= IORESOURCE_MEM,
+	},
+	[1] = {
+		.start	= TEGRA_MSELECT_BASE,
+		.end	= TEGRA_MSELECT_BASE + TEGRA_MSELECT_SIZE - 1,
+		.flags	= IORESOURCE_MEM,
+	},
+	[2] = {
+		.start	= INT_HIER_GROUP1_CPU,
+		.end	= INT_HIER_GROUP1_CPU,
+		.flags	= IORESOURCE_IRQ,
+	},
+};
+
+struct platform_device tegra_hier_ictlr_device = {
+	.name		= "tegra-hier-ictlr",
+	.id		= -1,
+	.resource	= tegra_hier_ictlr_resource,
+	.num_resources	= ARRAY_SIZE(tegra_hier_ictlr_resource),
+};
+#endif

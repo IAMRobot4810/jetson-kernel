@@ -539,22 +539,25 @@ out:
  * @pdd: Domain data of the device to restore the state of.
  * @genpd: PM domain the device belongs to.
  */
-static void __pm_genpd_restore_device(struct pm_domain_data *pdd,
+static int __pm_genpd_restore_device(struct pm_domain_data *pdd,
 				      struct generic_pm_domain *genpd)
 	__releases(&genpd->lock) __acquires(&genpd->lock)
 {
 	struct generic_pm_domain_data *gpd_data = to_gpd_data(pdd);
 	struct device *dev = pdd->dev;
 	bool need_restore = gpd_data->need_restore;
+	int err = 0;
 
 	gpd_data->need_restore = false;
 	mutex_unlock(&genpd->lock);
 
 	genpd_start_dev(genpd, dev);
 	if (need_restore)
-		genpd_restore_dev(genpd, dev);
+		err = genpd_restore_dev(genpd, dev);
 
 	mutex_lock(&genpd->lock);
+
+	return err;
 }
 
 /**
@@ -879,7 +882,12 @@ static int pm_genpd_runtime_resume(struct device *dev)
 		mutex_lock(&genpd->lock);
 	}
 	finish_wait(&genpd->status_wait_queue, &wait);
-	__pm_genpd_restore_device(dev->power.subsys_data->domain_data, genpd);
+	ret = __pm_genpd_restore_device(dev->power.subsys_data->domain_data, genpd);
+	if (ret < 0) {
+		mutex_unlock(&genpd->lock);
+		return ret;
+	}
+
 	genpd->resume_count--;
 	genpd_set_active(genpd);
 	wake_up_all(&genpd->status_wait_queue);
@@ -1175,6 +1183,8 @@ static int pm_genpd_suspend(struct device *dev)
 	if (IS_ERR(genpd))
 		return -EINVAL;
 
+	cancel_delayed_work_sync(&genpd->power_off_delayed_work);
+
 	return genpd->suspend_power_off ? 0 : genpd_suspend_dev(genpd, dev);
 }
 
@@ -1195,6 +1205,8 @@ static int pm_genpd_suspend_late(struct device *dev)
 	genpd = dev_to_genpd(dev);
 	if (IS_ERR(genpd))
 		return -EINVAL;
+
+	cancel_delayed_work_sync(&genpd->power_off_delayed_work);
 
 	return genpd->suspend_power_off ? 0 : genpd_suspend_late(genpd, dev);
 }
@@ -1225,6 +1237,8 @@ static int pm_genpd_suspend_noirq(struct device *dev)
 	if (psd && psd->domain_data &&
 	    !to_gpd_data(psd->domain_data)->need_save)
 		return 0;
+
+	cancel_delayed_work_sync(&genpd->power_off_delayed_work);
 
 	genpd_stop_dev(genpd, dev);
 
@@ -1675,6 +1689,7 @@ int __pm_genpd_add_device(struct generic_pm_domain *genpd, struct device *dev,
 
 	return ret;
 }
+EXPORT_SYMBOL(__pm_genpd_add_device);
 
 /**
  * __pm_genpd_of_add_device - Add a device to an I/O PM domain.
@@ -2408,7 +2423,7 @@ void pm_genpd_init(struct generic_pm_domain *genpd,
 	list_add(&genpd->gpd_list_node, &gpd_list);
 	mutex_unlock(&gpd_list_lock);
 }
-
+EXPORT_SYMBOL(pm_genpd_init);
 #ifdef CONFIG_DEBUG_FS
 /* Genpd status debugfs */
 static int genpd_status_show(struct seq_file *s, void *data)

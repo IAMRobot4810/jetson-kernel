@@ -5,7 +5,7 @@
  * Author:
  *	Colin Cross <ccross@google.com>
  *
- * Copyright (c) 2010-2013 NVIDIA CORPORATION. All rights reserved.
+ * Copyright (c) 2010-2014 NVIDIA CORPORATION. All rights reserved.
  *
  * This software is licensed under the terms of the GNU General Public
  * License version 2, as published by the Free Software Foundation, and
@@ -48,6 +48,7 @@ struct dvfs_relationship {
 	struct list_head to_node; /* node in relationship_to list */
 	struct list_head from_node; /* node in relationship_from list */
 	bool solved_at_nominal;
+	bool solved_at_suspend;
 };
 
 struct rail_stats {
@@ -76,6 +77,7 @@ struct dvfs_rail {
 	int (*resolve_override)(int mv);
 
 	const int *therm_mv_floors;
+	const int *therm_mv_dfll_floors;
 	int therm_mv_floors_num;
 	const int *therm_mv_caps;
 	int therm_mv_caps_num;
@@ -113,20 +115,38 @@ struct dvfs_rail {
 	struct tegra_cooling_device *vmin_cdev;
 	struct tegra_cooling_device *vmax_cdev;
 	struct tegra_cooling_device *vts_cdev;
+
+	/* Used for CPU clock switch between PLLX and DFLL */
+	struct tegra_cooling_device *clk_switch_cdev;
+
 	struct rail_alignment alignment;
 	struct rail_stats stats;
+	const char *version;
 };
 
+/*
+ * dfll_range -
+ *	DFLL_RANGE_NONE       : DFLL is not used
+ *	DFLL_RANGE_ALL_RATES  : DFLL is is used for all CPU rates
+ *	DFLL_RANGE_HIGH_RATES : DFLL is used only for high rates
+ *				above crossover with PLL dvfs curve
+ */
 enum dfll_range {
 	DFLL_RANGE_NONE = 0,
 	DFLL_RANGE_ALL_RATES,
 	DFLL_RANGE_HIGH_RATES,
 };
 
+/* DFLL usage is under thermal cooling device control */
+#define TEGRA_USE_DFLL_CDEV_CNTRL 3
+
+/* DVFS settings specific for DFLL clock source */
 struct dvfs_dfll_data {
 	u32		tune0;
 	u32		tune0_high_mv;
+	u32		tune0_simon_mask;
 	u32		tune1;
+	bool		tune0_low_at_cold;
 	unsigned long	droop_rate_min;
 	unsigned long	use_dfll_rate_min;
 	unsigned long	out_rate_min;
@@ -201,6 +221,7 @@ struct cvb_dvfs {
 	int vmin_trips_table[MAX_THERMAL_LIMITS];
 	int therm_floors_table[MAX_THERMAL_LIMITS];
 	int vts_trips_table[MAX_THERMAL_LIMITS];
+	int clk_switch_trips[MAX_THERMAL_LIMITS];
 };
 
 #define cpu_cvb_dvfs	cvb_dvfs
@@ -229,6 +250,7 @@ static inline int of_tegra_dvfs_init(const struct of_device_id *matches)
 
 void tegra11x_init_dvfs(void);
 void tegra12x_init_dvfs(void);
+void tegra13x_init_dvfs(void);
 void tegra14x_init_dvfs(void);
 void tegra12x_vdd_cpu_align(int step_uv, int offset_uv);
 int tegra_enable_dvfs_on_clk(struct clk *c, struct dvfs *d);
@@ -248,6 +270,10 @@ void tegra_dvfs_rail_off(struct dvfs_rail *rail, ktime_t now);
 void tegra_dvfs_rail_on(struct dvfs_rail *rail, ktime_t now);
 void tegra_dvfs_rail_pause(struct dvfs_rail *rail, ktime_t delta, bool on);
 int tegra_dvfs_rail_set_mode(struct dvfs_rail *rail, unsigned int mode);
+int tegra_dvfs_rail_register_notifier(struct dvfs_rail *rail,
+				      struct notifier_block *nb);
+int tegra_dvfs_rail_unregister_notifier(struct dvfs_rail *rail,
+					struct notifier_block *nb);
 struct dvfs_rail *tegra_dvfs_get_rail_by_name(const char *reg_id);
 
 int tegra_dvfs_predict_peak_millivolts(struct clk *c, unsigned long rate);
@@ -264,6 +290,7 @@ int tegra_dvfs_replace_voltage_table(struct dvfs *d, const int *new_millivolts);
 
 int tegra_dvfs_dfll_mode_set(struct dvfs *d, unsigned long rate);
 int tegra_dvfs_dfll_mode_clear(struct dvfs *d, unsigned long rate);
+int tegra_clk_dfll_range_control(enum dfll_range use_dfll);
 
 struct tegra_cooling_device *tegra_dvfs_get_cpu_vmax_cdev(void);
 struct tegra_cooling_device *tegra_dvfs_get_cpu_vmin_cdev(void);
@@ -271,19 +298,30 @@ struct tegra_cooling_device *tegra_dvfs_get_core_vmax_cdev(void);
 struct tegra_cooling_device *tegra_dvfs_get_core_vmin_cdev(void);
 struct tegra_cooling_device *tegra_dvfs_get_gpu_vmin_cdev(void);
 struct tegra_cooling_device *tegra_dvfs_get_gpu_vts_cdev(void);
+struct tegra_cooling_device *tegra_dvfs_get_cpu_clk_switch_cdev(void);
+#ifdef CONFIG_TEGRA_USE_SIMON
 void tegra_dvfs_rail_init_simon_vmin_offsets(
 	int *offsets, int offs_num, struct dvfs_rail *rail);
+#else
+static inline void tegra_dvfs_rail_init_simon_vmin_offsets(
+	int *offsets, int offs_num, struct dvfs_rail *rail)
+{ }
+#endif
 void tegra_dvfs_rail_init_vmin_thermal_profile(
 	int *therm_trips_table, int *therm_floors_table,
 	struct dvfs_rail *rail, struct dvfs_dfll_data *d);
 void tegra_dvfs_rail_init_vmax_thermal_profile(
 	int *therm_trips_table, int *therm_caps_table,
 	struct dvfs_rail *rail, struct dvfs_dfll_data *d);
+int __init tegra_dvfs_rail_init_clk_switch_thermal_profile(
+	int *clk_switch_trips, struct dvfs_rail *rail);
 int tegra_dvfs_rail_init_thermal_dvfs_trips(
 	int *therm_trips_table, struct dvfs_rail *rail);
 int tegra_dvfs_init_thermal_dvfs_voltages(int *millivolts,
 	int *peak_millivolts, int freqs_num, int ranges_num, struct dvfs *d);
-int tegra_dvfs_rail_dfll_mode_set_cold(struct dvfs_rail *rail);
+int tegra_dvfs_rail_dfll_mode_set_cold(struct dvfs_rail *rail,
+				       struct clk *dfll_clk);
+int tegra_dvfs_rail_get_thermal_floor(struct dvfs_rail *rail);
 void tegra_dvfs_rail_register_vmax_cdev(struct dvfs_rail *rail);
 
 #ifdef CONFIG_TEGRA_VDD_CORE_OVERRIDE
@@ -334,6 +372,14 @@ static inline bool tegra_dvfs_is_dfll_range(struct dvfs *d, unsigned long rate)
 		((d->dfll_data.range == DFLL_RANGE_HIGH_RATES) &&
 		(rate >= d->dfll_data.use_dfll_rate_min));
 }
+
+static inline int tegra_dvfs_get_dfll_range(struct dvfs *d)
+{
+	if (d)
+		return d->dfll_data.range;
+	return -ENOENT;
+}
+
 static inline int tegra_dvfs_set_dfll_range(struct dvfs *d, int range)
 {
 	if (!d->dfll_millivolts)
@@ -345,6 +391,7 @@ static inline int tegra_dvfs_set_dfll_range(struct dvfs *d, int range)
 	d->dfll_data.range = range;
 	return 0;
 }
+
 static inline void tegra_dvfs_rail_mode_updating(struct dvfs_rail *rail,
 						 bool updating)
 {
@@ -370,14 +417,6 @@ static inline int tegra_dvfs_rail_get_boot_level(struct dvfs_rail *rail)
 	if (rail)
 		return rail->boot_millivolts ? : rail->nominal_millivolts;
 	return -ENOENT;
-}
-
-static inline int tegra_dvfs_rail_get_thermal_floor(struct dvfs_rail *rail)
-{
-	if (rail && rail->therm_mv_floors &&
-	    (rail->therm_floor_idx < rail->therm_mv_floors_num))
-		return rail->therm_mv_floors[rail->therm_floor_idx];
-	return 0;
 }
 
 #endif

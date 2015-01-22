@@ -3,7 +3,7 @@
  *
  * Author: Nikesh Oswal <noswal@nvidia.com>
  * Copyright (C) 2011 - NVIDIA, Inc.
- * Copyright (C) 2012-2013, NVIDIA CORPORATION. All rights reserved.
+ * Copyright (C) 2012-2014, NVIDIA CORPORATION. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or
  * modify it under the terms of the GNU General Public License
@@ -654,10 +654,12 @@ static void tegra30_dam_write_coeff_ram(struct tegra30_dam_context *dam, int fsi
 	tegra30_dam_writel(dam, 0x00005000,
 			TEGRA30_DAM_AUDIORAMCTL_DAM_CTRL_0);
 
-	for (i = 0; i < 64; i++) {
-		val = coefRam[i];
-		tegra30_dam_writel(dam, val,
+	if (coefRam) {
+		for (i = 0; i < 64; i++) {
+			val = coefRam[i];
+			tegra30_dam_writel(dam, val,
 				TEGRA30_DAM_AUDIORAMCTL_DAM_DATA_0);
+		}
 	}
 }
 
@@ -795,6 +797,7 @@ int tegra30_dam_allocate_controller()
 
 	return -ENOENT;
 }
+EXPORT_SYMBOL(tegra30_dam_allocate_controller);
 
 void tegra30_dam_disable_clock(int ifc)
 {
@@ -806,6 +809,7 @@ void tegra30_dam_disable_clock(int ifc)
 	dam =  dams_cont_info[ifc];
 	pm_runtime_put(dam->dev);
 }
+EXPORT_SYMBOL(tegra30_dam_disable_clock);
 
 int tegra30_dam_enable_clock(int ifc)
 {
@@ -819,6 +823,7 @@ int tegra30_dam_enable_clock(int ifc)
 
 	return 0;
 }
+EXPORT_SYMBOL(tegra30_dam_enable_clock);
 
 int tegra30_dam_allocate_channel(int ifc, int chid)
 {
@@ -836,6 +841,7 @@ int tegra30_dam_allocate_channel(int ifc, int chid)
 
 	return -ENOENT;
 }
+EXPORT_SYMBOL(tegra30_dam_allocate_channel);
 
 int tegra30_dam_free_channel(int ifc, int chid)
 {
@@ -853,6 +859,7 @@ int tegra30_dam_free_channel(int ifc, int chid)
 
 	return -EINVAL;
 }
+EXPORT_SYMBOL(tegra30_dam_free_channel);
 
 int tegra30_dam_free_controller(int ifc)
 {
@@ -871,6 +878,7 @@ int tegra30_dam_free_controller(int ifc)
 
 	return -EINVAL;
 }
+EXPORT_SYMBOL(tegra30_dam_free_controller);
 
 void tegra30_dam_set_samplerate(int ifc, int chid, int samplerate)
 {
@@ -898,6 +906,7 @@ void tegra30_dam_set_samplerate(int ifc, int chid, int samplerate)
 		break;
 	}
 }
+EXPORT_SYMBOL(tegra30_dam_set_samplerate);
 
 int tegra30_dam_set_gain(int ifc, int chid, int gain)
 {
@@ -919,6 +928,7 @@ int tegra30_dam_set_gain(int ifc, int chid, int gain)
 
 	return 0;
 }
+EXPORT_SYMBOL(tegra30_dam_set_gain);
 
 int tegra30_dam_set_acif(int ifc, int chid, unsigned int audio_channels,
 	unsigned int audio_bits, unsigned int client_channels,
@@ -978,6 +988,7 @@ int tegra30_dam_set_acif(int ifc, int chid, unsigned int audio_channels,
 
 	return 0;
 }
+EXPORT_SYMBOL(tegra30_dam_set_acif);
 
 void tegra30_dam_enable(int ifc, int on, int chid)
 {
@@ -1047,6 +1058,7 @@ void tegra30_dam_enable(int ifc, int on, int chid)
 		}
 	}
 }
+EXPORT_SYMBOL(tegra30_dam_enable);
 
 void tegra30_dam_ch0_set_datasync(int ifc, int datasync)
 {
@@ -1059,6 +1071,7 @@ void tegra30_dam_ch0_set_datasync(int ifc, int datasync)
 	val |= datasync << TEGRA30_DAM_DATA_SYNC_SHIFT;
 	tegra30_dam_writel(dam, val, TEGRA30_DAM_CH0_CTRL);
 }
+EXPORT_SYMBOL(tegra30_dam_ch0_set_datasync);
 
 void tegra30_dam_ch1_set_datasync(int ifc, int datasync)
 {
@@ -1071,6 +1084,7 @@ void tegra30_dam_ch1_set_datasync(int ifc, int datasync)
 	val |= datasync << TEGRA30_DAM_DATA_SYNC_SHIFT;
 	tegra30_dam_writel(dam, val, TEGRA30_DAM_CH1_CTRL);
 }
+EXPORT_SYMBOL(tegra30_dam_ch1_set_datasync);
 
 void tegra30_dam_enable_clip_counter(struct tegra30_dam_context *dam, int on)
 {

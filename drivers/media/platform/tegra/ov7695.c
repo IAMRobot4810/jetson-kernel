@@ -424,7 +424,8 @@ static int ov7695_open(struct inode *inode, struct file *file)
 
 	file->private_data = info;
 
-	err = ov7695_mclk_enable(info);
+	if (info->mclk)
+		err = ov7695_mclk_enable(info);
 	if (!err && info->pdata && info->pdata->power_on) {
 		err = info->pdata->power_on(&info->power);
 	} else {
@@ -432,7 +433,7 @@ static int ov7695_open(struct inode *inode, struct file *file)
 			"%s:no valid power_on function.\n", __func__);
 		err = -EFAULT;
 	}
-	if (err < 0)
+	if (err < 0 && info->mclk)
 		ov7695_mclk_disable(info);
 	return err;
 }
@@ -443,7 +444,8 @@ int ov7695_release(struct inode *inode, struct file *file)
 
 	if (info->pdata && info->pdata->power_off)
 		info->pdata->power_off(&info->power);
-	ov7695_mclk_disable(info);
+	if (info->mclk)
+		ov7695_mclk_disable(info);
 	file->private_data = NULL;
 
 	/* warn if device is already released */
@@ -507,6 +509,9 @@ static const struct file_operations ov7695_fileops = {
 	.owner = THIS_MODULE,
 	.open = ov7695_open,
 	.unlocked_ioctl = ov7695_ioctl,
+#ifdef CONFIG_COMPAT
+	.compat_ioctl = ov7695_ioctl,
+#endif
 	.release = ov7695_release,
 };
 
@@ -713,8 +718,8 @@ static long ov7695_ioctl(struct file *file,
 	int err = 0;
 	struct ov7695_info *info = file->private_data;
 
-	switch (cmd) {
-	case OV7695_SENSOR_IOCTL_SET_MODE:
+	switch (_IOC_NR(cmd)) {
+	case _IOC_NR(OV7695_SENSOR_IOCTL_SET_MODE):
 	{
 		struct ov7695_mode mode;
 
@@ -728,7 +733,7 @@ static long ov7695_ioctl(struct file *file,
 		break;
 	}
 
-	case OV7695_SENSOR_IOCTL_SET_WHITE_BALANCE:
+	case _IOC_NR(OV7695_SENSOR_IOCTL_SET_WHITE_BALANCE):
 	{
 		u8 whitebalance;
 
@@ -768,7 +773,7 @@ static long ov7695_ioctl(struct file *file,
 		return 0;
 	}
 
-	case OV7695_SENSOR_IOCTL_SET_EV:
+	case _IOC_NR(OV7695_SENSOR_IOCTL_SET_EV):
 	{
 		short ev;
 
@@ -803,7 +808,7 @@ static long ov7695_ioctl(struct file *file,
 		return 0;
 	}
 
-	case OV7695_SENSOR_IOCTL_GET_EV:
+	case _IOC_NR(OV7695_SENSOR_IOCTL_GET_EV):
 	{
 		short ev;
 		u8 val;
@@ -892,13 +897,19 @@ static int ov7695_probe(struct i2c_client *client,
 	}
 
 	mclk_name = info->pdata && info->pdata->mclk_name ?
-		    info->pdata->mclk_name : "default_mclk";
-	info->mclk = devm_clk_get(&client->dev, mclk_name);
-	if (IS_ERR(info->mclk)) {
-		dev_err(&client->dev, "%s: unable to get clock %s\n",
-			__func__, mclk_name);
-		return PTR_ERR(info->mclk);
+		info->pdata->mclk_name : "default_mclk";
+	if (!strncmp(mclk_name, "ext_mclk", 8))
+		/* use external mclk */
+		info->mclk = NULL;
+	else {
+		info->mclk = devm_clk_get(&client->dev, mclk_name);
+		if (IS_ERR(info->mclk)) {
+			dev_err(&client->dev, "%s: unable to get clock %s\n",
+				__func__, mclk_name);
+			return PTR_ERR(info->mclk);
+		}
 	}
+
 
 #ifdef CONFIG_DEBUG_FS
 	ov7695_debug_init(info);

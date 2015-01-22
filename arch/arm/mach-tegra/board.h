@@ -31,6 +31,13 @@
 
 #include <mach/tegra_smmu.h>
 
+/*
+ * OF is always used on ARM64
+ */
+#ifdef CONFIG_ARM64
+#define CONFIG_USE_OF "y"
+#endif
+
 #ifdef CONFIG_TEGRA_NVDUMPER
 #define NVDUMPER_RESERVED_SIZE 4096UL
 #endif
@@ -73,7 +80,6 @@
 		.usage_mask	= NVMAP_HEAP_CARVEOUT_IRAM,			\
 		.base		= TEGRA_IRAM_BASE + TEGRA_RESET_HANDLER_SIZE,	\
 		.size		= TEGRA_IRAM_SIZE - TEGRA_RESET_HANDLER_SIZE,	\
-		.buddy_size	= 0, /* no buddy allocation for IRAM */		\
 	}
 #endif
 
@@ -98,6 +104,8 @@ void __init tegra14x_init_early(void);
 void __init tegra_map_common_io(void);
 void __init tegra_reserve(unsigned long carveout_size, unsigned long fb_size,
 	unsigned long fb2_size);
+void __init tegra_reserve4(ulong carveout_size, ulong fb_size,
+	ulong fb2_size, ulong vpr_size);
 int __init tegra_release_bootloader_fb(void);
 void __init tegra_protected_aperture_init(unsigned long aperture);
 int  __init tegra_init_board_info(void);
@@ -158,7 +166,7 @@ void tegra_fb_linear_set(struct iommu_linear_map *map);
 static inline void tegra_fb_linear_set(struct iommu_linear_map *map) {}
 #endif
 
-#ifdef CONFIG_NVMAP_USE_CMA_FOR_CARVEOUT
+#ifdef CONFIG_CMA
 void carveout_linear_set(struct device *cma_dev);
 #else
 static inline void carveout_linear_set(struct device *cma_dev) {}
@@ -223,6 +231,7 @@ enum touch_panel {
 	TOUCHPANEL_LOKI_WINTEK_5_66_UNLAMIN,
 	TOUCHPANEL_TN7,
 	TOUCHPANEL_TN8,
+	TOUCHPANEL_LOKI_JDI5,
 };
 
 enum audio_codec_type {
@@ -233,6 +242,12 @@ enum audio_codec_type {
 enum image_type {
 	system_image = 0,
 	rck_image,
+};
+
+/* Usage Model */
+enum chip_personality {
+	normal = 0,
+	always_on,
 };
 
 void tegra_get_board_info(struct board_info *);
@@ -266,6 +281,7 @@ int tegra_get_cvb_alignment_uV(void);
 int tegra_soc_device_init(const char *machine);
 int get_pwr_i2c_clk_rate(void);
 bool is_pmic_wdt_disabled_at_boot(void);
+bool is_tegra_diagnostic_mode(void);
 
 extern void tegra_set_usb_vbus_internal_wake(bool enable);
 extern void tegra_set_usb_id_internal_wake(bool enable);

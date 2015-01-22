@@ -2,7 +2,7 @@
  * board-common.c: Implement function which is common across
  * different boards.
  *
- * Copyright (c) 2011-2013, NVIDIA CORPORATION.  All rights reserved.
+ * Copyright (c) 2011-2014, NVIDIA CORPORATION.  All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -162,6 +162,7 @@ static void tegra_add_trip_points(struct thermal_trip_info *trips,
 		trip_state->trip_type = THERMAL_TRIP_ACTIVE;
 		trip_state->upper = trip_state->lower = i + 1;
 		trip_state->hysteresis = 1000;
+		trip_state->mask = 1;
 
 		(*num_trips)++;
 	}
@@ -216,4 +217,11 @@ void tegra_add_core_vmax_trips(struct thermal_trip_info *trips, int *num_trips)
 {
 	tegra_add_trip_points(trips, num_trips,
 			      tegra_dvfs_get_core_vmax_cdev());
+}
+
+void tegra_add_cpu_clk_switch_trips(struct thermal_trip_info *trips,
+							int *num_trips)
+{
+	tegra_add_trip_points(trips, num_trips,
+				 tegra_dvfs_get_cpu_clk_switch_cdev());
 }

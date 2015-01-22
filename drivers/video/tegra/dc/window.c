@@ -39,13 +39,7 @@ static bool tegra_dc_windows_are_clean(struct tegra_dc_win *windows[],
 
 	mutex_lock(&dc->lock);
 	for (i = 0; i < n; i++) {
-		struct tegra_dc_win *dc_win;
-		if (windows[i] == NULL)
-			continue;
-		dc_win = tegra_dc_get_window(dc, windows[i]->idx);
-		if (WARN_ON(dc_win == NULL))
-			continue;
-		if (dc_win->dirty) {
+		if (windows[i]->dirty) {
 			mutex_unlock(&dc->lock);
 			return false;
 		}
@@ -53,21 +47,6 @@ static bool tegra_dc_windows_are_clean(struct tegra_dc_win *windows[],
 	mutex_unlock(&dc->lock);
 
 	return true;
-}
-
-int tegra_dc_config_frame_end_intr(struct tegra_dc *dc, bool enable)
-{
-
-	mutex_lock(&dc->lock);
-	tegra_dc_io_start(dc);
-	if (enable) {
-		atomic_inc(&dc->frame_end_ref);
-		tegra_dc_unmask_interrupt(dc, FRAME_END_INT);
-	} else if (!atomic_dec_return(&dc->frame_end_ref))
-		tegra_dc_mask_interrupt(dc, FRAME_END_INT);
-	tegra_dc_io_end(dc);
-	mutex_unlock(&dc->lock);
-	return 0;
 }
 
 static int get_topmost_window(u32 *depths, unsigned long *wins, int win_num)
@@ -442,7 +421,8 @@ static inline void tegra_dc_update_scaling(struct tegra_dc *dc,
 
 /* Does not support updating windows on multiple dcs in one call.
  * Requires a matching sync_windows to avoid leaking ref-count on clocks. */
-int tegra_dc_update_windows(struct tegra_dc_win *windows[], int n)
+int tegra_dc_update_windows(struct tegra_dc_win *windows[], int n,
+	u16 *dirty_rect)
 {
 	struct tegra_dc *dc;
 	unsigned long update_mask = GENERAL_ACT_REQ;
@@ -450,9 +430,23 @@ int tegra_dc_update_windows(struct tegra_dc_win *windows[], int n)
 	bool update_blend_par = false;
 	bool update_blend_seq = false;
 	int i;
+	bool do_partial_update = false;
+	unsigned int xoff;
+	unsigned int yoff;
+	unsigned int width;
+	unsigned int height;
 
 	dc = windows[0]->dc;
 	trace_update_windows(dc);
+
+	/* check that window arguments are valid */
+	for (i = 0; i < n; i++) {
+		struct tegra_dc_win *win = windows[i];
+		struct tegra_dc_win *dc_win =
+			win ? tegra_dc_get_window(dc, win->idx) : NULL;
+		if (WARN_ONCE(!dc_win, "ignoring invalid windows in request"))
+			return -EINVAL;
+	}
 
 	if (dc->out->flags & TEGRA_DC_OUT_ONE_SHOT_MODE) {
 		/* Acquire one_shot_lock to avoid race condition between
@@ -484,35 +478,38 @@ int tegra_dc_update_windows(struct tegra_dc_win *windows[], int n)
 		tegra_dc_writel(dc, WRITE_MUX_ASSEMBLY | READ_MUX_ASSEMBLY,
 			DC_CMD_STATE_ACCESS);
 
+	if (dirty_rect) {
+		xoff = dirty_rect[0];
+		yoff = dirty_rect[1];
+		width = dirty_rect[2];
+		height = dirty_rect[3];
+		do_partial_update = !dc->out_ops->partial_update(dc,
+			&xoff, &yoff, &width, &height);
+
+		if (do_partial_update) {
+			tegra_dc_writel(dc, width | (height << 16),
+				DC_DISP_DISP_ACTIVE);
+
+			dc->disp_active_dirty = true;
+		}
+	}
+
+
 	for (i = 0; i < n; i++) {
-		struct tegra_dc_win *win;
-		struct tegra_dc_win *dc_win;
+		struct tegra_dc_win *win = windows[i];
+		struct tegra_dc_win *dc_win = tegra_dc_get_window(dc, win->idx);
 		bool scan_column = 0;
 		fixed20_12 h_offset, v_offset;
-		bool invert_h;
-		bool invert_v;
-		bool yuv;
-		bool yuvp;
-		bool yuvsp;
-		unsigned Bpp;
+		bool invert_h = (win->flags & TEGRA_WIN_FLAG_INVERT_H) != 0;
+		bool invert_v = (win->flags & TEGRA_WIN_FLAG_INVERT_V) != 0;
+		bool yuv = tegra_dc_is_yuv(win->fmt);
+		bool yuvp = tegra_dc_is_yuv_planar(win->fmt);
+		bool yuvsp = tegra_dc_is_yuv_semi_planar(win->fmt);
+		unsigned Bpp = tegra_dc_fmt_bpp(win->fmt) / 8;
 		/* Bytes per pixel of bandwidth, used for dda_inc calculation */
-		unsigned Bpp_bw;
+		unsigned Bpp_bw = Bpp * ((yuvp || yuvsp) ? 2 : 1);
 		bool filter_h;
 		bool filter_v;
-		win = windows[i];
-		if (win == NULL)
-			continue;
-		if (WARN_ON(!test_bit(win->idx, &dc->valid_windows)))
-			continue;
-		dc_win = tegra_dc_get_window(dc, win->idx);
-		invert_h = (win->flags & TEGRA_WIN_FLAG_INVERT_H) != 0;
-		invert_v = (win->flags & TEGRA_WIN_FLAG_INVERT_V) != 0;
-		yuv = tegra_dc_is_yuv(win->fmt);
-		yuvp = tegra_dc_is_yuv_planar(win->fmt);
-		yuvsp = tegra_dc_is_yuv_semi_planar(win->fmt);
-		Bpp = tegra_dc_fmt_bpp(win->fmt) / 8;
-		/* Bytes per pixel of bandwidth, used for dda_inc calculation */
-		Bpp_bw = Bpp * ((yuvp || yuvsp) ? 2 : 1);
 #if defined(CONFIG_TEGRA_DC_SCAN_COLUMN)
 		scan_column = (win->flags & TEGRA_WIN_FLAG_SCAN_COLUMN);
 #endif
@@ -559,6 +556,66 @@ int tegra_dc_update_windows(struct tegra_dc_win *windows[], int n)
 		tegra_dc_writel(dc, tegra_dc_fmt_byteorder(win->fmt),
 			DC_WIN_BYTE_SWAP);
 
+		if (do_partial_update) {
+			if (!win->out_w || !win->out_h ||
+				(win->out_x >= (xoff + width)) ||
+				(win->out_y >= (yoff + height)) ||
+				(xoff >= (win->out_x + win->out_w)) ||
+				(yoff >= (win->out_y + win->out_h))) {
+				tegra_dc_writel(dc, 0, DC_WIN_WIN_OPTIONS);
+				continue;
+			} else {
+				u64 tmp_64;
+				fixed20_12 fixed_tmp;
+				unsigned int xoff_2;
+				unsigned int yoff_2;
+				unsigned int width_2;
+				unsigned int height_2;
+
+				xoff_2 = (win->out_x < xoff) ? xoff :
+					win->out_x;
+				yoff_2 = (win->out_y < yoff) ? yoff :
+					win->out_y;
+				width_2 = ((win->out_x + win->out_w) >
+					(xoff + width)) ?
+					(xoff + width - xoff_2) :
+					(win->out_x + win->out_w - xoff_2);
+				height_2 = ((win->out_y + win->out_h) >
+					(yoff + height)) ?
+					(yoff + height - yoff_2) :
+					(win->out_y + win->out_h - yoff_2);
+
+				tmp_64 = (u64)(xoff_2 - win->out_x) *
+					win->w.full;
+				do_div(tmp_64, win->out_w);
+				fixed_tmp.full = (u32)tmp_64;
+				win->x.full += dfixed_floor(fixed_tmp);
+
+				tmp_64 = (u64)(yoff_2 - win->out_y) *
+					win->h.full;
+				do_div(tmp_64, win->out_h);
+				fixed_tmp.full = (u32)tmp_64;
+				win->y.full += dfixed_floor(fixed_tmp);
+
+				tmp_64 = (u64)(width_2) * win->w.full;
+				do_div(tmp_64, win->out_w);
+				fixed_tmp.full = (u32)tmp_64;
+				win->w.full = dfixed_floor(fixed_tmp);
+
+				tmp_64 = (u64)(height_2) * win->h.full;
+				do_div(tmp_64, win->out_h);
+				fixed_tmp.full = (u32)tmp_64;
+				win->h.full = dfixed_floor(fixed_tmp);
+
+				/* Move the partial region to the up-left corner
+				 * so dc can only scan out this region. */
+				win->out_x = xoff_2 - xoff;
+				win->out_y = yoff_2 - yoff;
+				win->out_w = width_2;
+				win->out_h = height_2;
+			}
+		}
+
 		tegra_dc_writel(dc,
 			V_POSITION(win->out_y) | H_POSITION(win->out_x),
 			DC_WIN_POSITION);
@@ -575,16 +632,12 @@ int tegra_dc_update_windows(struct tegra_dc_win *windows[], int n)
 				DC_WIN_SIZE);
 		}
 
-		/* Check scan_column flag to set window size and scaling. */
 		win_options = WIN_ENABLE;
-		if (scan_column) {
+		if (scan_column)
 			win_options |= WIN_SCAN_COLUMN;
-			win_options |= H_FILTER_ENABLE(filter_v);
-			win_options |= V_FILTER_ENABLE(filter_h);
-		} else {
-			win_options |= H_FILTER_ENABLE(filter_h);
-			win_options |= V_FILTER_ENABLE(filter_v);
-		}
+
+		win_options |= H_FILTER_ENABLE(filter_h);
+		win_options |= V_FILTER_ENABLE(filter_v);
 
 		/* Update scaling registers if window supports scaling. */
 		if (likely(tegra_dc_feature_has_scaling(dc, win->idx)))
@@ -596,57 +649,48 @@ int tegra_dc_update_windows(struct tegra_dc_win *windows[], int n)
 		tegra_dc_writel(dc, 0, DC_WIN_UV_BUF_STRIDE);
 #endif
 
-#if defined(CONFIG_ARCH_DMA_ADDR_T_64BIT)
-		tegra_dc_writel(dc,
-			tegra_dc_reg_l32(win->phys_addr),
-			DC_WINBUF_START_ADDR);
-		tegra_dc_writel(dc,
-			tegra_dc_reg_h32(win->phys_addr),
-			DC_WINBUF_START_ADDR_HI);
+#if defined(CONFIG_ARCH_TEGRA_2x_SOC) || defined(CONFIG_ARCH_TEGRA_3x_SOC) || \
+	defined(CONFIG_ARCH_TEGRA_11x_SOC) || defined(CONFIG_ARCH_TEGRA_14x_SOC)
+		tegra_dc_writel(dc, win->phys_addr, DC_WINBUF_START_ADDR);
 #else
-		tegra_dc_writel(dc, win->phys_addr,
+		tegra_dc_writel(dc, tegra_dc_reg_l32(win->phys_addr),
 			DC_WINBUF_START_ADDR);
+		tegra_dc_writel(dc, tegra_dc_reg_h32(win->phys_addr),
+			DC_WINBUF_START_ADDR_HI);
 #endif
 		if (!yuvp && !yuvsp) {
 			tegra_dc_writel(dc, win->stride, DC_WIN_LINE_STRIDE);
 		} else if (yuvp) {
-#if defined(CONFIG_ARCH_DMA_ADDR_T_64BIT)
-			tegra_dc_writel(dc,
-				tegra_dc_reg_l32(win->phys_addr_u),
+#if defined(CONFIG_ARCH_TEGRA_2x_SOC) || defined(CONFIG_ARCH_TEGRA_3x_SOC) || \
+	defined(CONFIG_ARCH_TEGRA_11x_SOC) || defined(CONFIG_ARCH_TEGRA_14x_SOC)
+			tegra_dc_writel(dc, win->phys_addr_u,
 				DC_WINBUF_START_ADDR_U);
-			tegra_dc_writel(dc,
-				tegra_dc_reg_h32(win->phys_addr_u),
-				DC_WINBUF_START_ADDR_HI_U);
-			tegra_dc_writel(dc,
-				tegra_dc_reg_l32(win->phys_addr_v),
+			tegra_dc_writel(dc, win->phys_addr_v,
 				DC_WINBUF_START_ADDR_V);
-			tegra_dc_writel(dc,
-				tegra_dc_reg_h32(win->phys_addr_v),
-				DC_WINBUF_START_ADDR_HI_V);
 #else
-			tegra_dc_writel(dc,
-				win->phys_addr_u,
+			tegra_dc_writel(dc, tegra_dc_reg_l32(win->phys_addr_u),
 				DC_WINBUF_START_ADDR_U);
-			tegra_dc_writel(dc,
-				win->phys_addr_v,
+			tegra_dc_writel(dc, tegra_dc_reg_h32(win->phys_addr_u),
+				DC_WINBUF_START_ADDR_HI_U);
+			tegra_dc_writel(dc, tegra_dc_reg_l32(win->phys_addr_v),
 				DC_WINBUF_START_ADDR_V);
+			tegra_dc_writel(dc, tegra_dc_reg_h32(win->phys_addr_v),
+				DC_WINBUF_START_ADDR_HI_V);
 #endif
 			tegra_dc_writel(dc,
 				LINE_STRIDE(win->stride) |
 				UV_LINE_STRIDE(win->stride_uv),
 				DC_WIN_LINE_STRIDE);
 		} else {
-#if defined(CONFIG_ARCH_DMA_ADDR_T_64BIT)
-			tegra_dc_writel(dc,
-				tegra_dc_reg_l32(win->phys_addr_u),
-				DC_WINBUF_START_ADDR_U);
-			tegra_dc_writel(dc,
-				tegra_dc_reg_h32(win->phys_addr_u),
-				DC_WINBUF_START_ADDR_HI_U);
-#else
-			tegra_dc_writel(dc,
-					win->phys_addr_u,
+#if defined(CONFIG_ARCH_TEGRA_2x_SOC) || defined(CONFIG_ARCH_TEGRA_3x_SOC) || \
+	defined(CONFIG_ARCH_TEGRA_11x_SOC) || defined(CONFIG_ARCH_TEGRA_14x_SOC)
+			tegra_dc_writel(dc, win->phys_addr_u,
 					DC_WINBUF_START_ADDR_U);
+#else
+			tegra_dc_writel(dc, tegra_dc_reg_l32(win->phys_addr_u),
+				DC_WINBUF_START_ADDR_U);
+			tegra_dc_writel(dc, tegra_dc_reg_h32(win->phys_addr_u),
+				DC_WINBUF_START_ADDR_HI_U);
 #endif
 			tegra_dc_writel(dc,
 					LINE_STRIDE(win->stride) |
@@ -680,7 +724,7 @@ int tegra_dc_update_windows(struct tegra_dc_win *windows[], int n)
 	if (tegra_dc_feature_has_interlace(dc, win->idx) &&
 		(dc->mode.vmode == FB_VMODE_INTERLACED)) {
 
-#if defined(CONFIG_ARCH_DMA_ADDR_T_64BIT)
+#if defined(CONFIG_ARCH_TEGRA_12x_SOC)
 			tegra_dc_writel(dc, tegra_dc_reg_l32
 				(win->phys_addr2),
 				DC_WINBUF_START_ADDR_FIELD2);
@@ -693,43 +737,35 @@ int tegra_dc_update_windows(struct tegra_dc_win *windows[], int n)
 				DC_WINBUF_START_ADDR_FIELD2);
 #endif
 		if (yuvp) {
-#if defined(CONFIG_ARCH_DMA_ADDR_T_64BIT)
-			tegra_dc_writel(dc,
-				tegra_dc_reg_l32(win->phys_addr_u2),
+#if defined(CONFIG_ARCH_TEGRA_2x_SOC) || defined(CONFIG_ARCH_TEGRA_3x_SOC) || \
+	defined(CONFIG_ARCH_TEGRA_11x_SOC) || defined(CONFIG_ARCH_TEGRA_14x_SOC)
+			tegra_dc_writel(dc, win->phys_addr_u2,
 				DC_WINBUF_START_ADDR_FIELD2_U);
-			tegra_dc_writel(dc,
-				tegra_dc_reg_h32(win->phys_addr_u2),
+
+			tegra_dc_writel(dc, win->phys_addr_v2,
+				DC_WINBUF_START_ADDR_FIELD2_V);
+#else
+			tegra_dc_writel(dc, tegra_dc_reg_l32(win->phys_addr_u2),
+				DC_WINBUF_START_ADDR_FIELD2_U);
+			tegra_dc_writel(dc, tegra_dc_reg_h32(win->phys_addr_u2),
 				DC_WINBUF_START_ADDR_FIELD2_HI_U);
 
-			tegra_dc_writel(dc,
-				tegra_dc_reg_l32(win->phys_addr_v2),
+			tegra_dc_writel(dc, tegra_dc_reg_l32(win->phys_addr_v2),
 				DC_WINBUF_START_ADDR_FIELD2_V);
-			tegra_dc_writel(dc,
-				tegra_dc_reg_h32(win->phys_addr_v2),
+			tegra_dc_writel(dc, tegra_dc_reg_h32(win->phys_addr_v2),
 				DC_WINBUF_START_ADDR_FIELD2_HI_V);
-#else
-			tegra_dc_writel(dc,
-				win->phys_addr_u2,
-				DC_WINBUF_START_ADDR_FIELD2_U);
-
-			tegra_dc_writel(dc,
-				win->phys_addr_v2,
-				DC_WINBUF_START_ADDR_FIELD2_V);
 #endif
 		} else if (yuvsp) {
-#if defined(CONFIG_ARCH_DMA_ADDR_T_64BIT)
-			tegra_dc_writel(dc, tegra_dc_reg_l32
-				(win->phys_addr_u2),
+#if defined(CONFIG_ARCH_TEGRA_2x_SOC) || defined(CONFIG_ARCH_TEGRA_3x_SOC) || \
+	defined(CONFIG_ARCH_TEGRA_11x_SOC) || defined(CONFIG_ARCH_TEGRA_14x_SOC)
+			tegra_dc_writel(dc, win->phys_addr_u2,
 				DC_WINBUF_START_ADDR_FIELD2_U);
-			tegra_dc_writel(dc, tegra_dc_reg_h32
-				(win->phys_addr_u2),
-				DC_WINBUF_START_ADDR_FIELD2_HI_U);
 #else
-			tegra_dc_writel(dc,
-				win->phys_addr_u2,
+			tegra_dc_writel(dc, tegra_dc_reg_l32(win->phys_addr_u2),
 				DC_WINBUF_START_ADDR_FIELD2_U);
+			tegra_dc_writel(dc, tegra_dc_reg_h32(win->phys_addr_u2),
+				DC_WINBUF_START_ADDR_FIELD2_HI_U);
 #endif
-		} else {
 		}
 		tegra_dc_writel(dc, dfixed_trunc(h_offset),
 			DC_WINBUF_ADDR_H_OFFSET_FIELD2);
@@ -834,6 +870,11 @@ int tegra_dc_update_windows(struct tegra_dc_win *windows[], int n)
 				win_options |= INTERLACE_ENABLE;
 		}
 #endif
+		if (dc_win->csc_dirty) {
+			tegra_dc_set_csc(dc, &dc_win->csc);
+			dc_win->csc_dirty = false;
+		}
+
 		tegra_dc_writel(dc, win_options, DC_WIN_WIN_OPTIONS);
 
 		dc_win->dirty = no_vsync ? 0 : 1;

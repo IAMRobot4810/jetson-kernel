@@ -1,6 +1,6 @@
 /*
  * Copyright (C) 2010 Google, Inc.
- * Copyright (C) 2011-2013, NVIDIA Corporation. All rights reserved.
+ * Copyright (C) 2011-2014, NVIDIA Corporation. All rights reserved.
  *
  * Author:
  *	Colin Cross <ccross@google.com>
@@ -201,6 +201,13 @@
 
 #endif
 
+#if !defined(CONFIG_ARCH_TEGRA_2x_SOC) && !defined(CONFIG_ARCH_TEGRA_3x_SOC)
+
+#define TEGRA_HIER2_ICTLR1_BASE		0x60004800
+#define TEGRA_HIER2_ICTLR1_SIZE		SZ_256
+
+#endif
+
 #define TEGRA_TMR1_BASE			0x60005000
 #define TEGRA_TMR1_SIZE			SZ_8
 
@@ -255,6 +262,9 @@
 
 #define TEGRA_CLK_RESET_BASE		0x60006000
 #define TEGRA_CLK_RESET_SIZE		SZ_4K
+
+#define TEGRA_CLK13_RESET_BASE		0x70040000
+#define TEGRA_CLK13_RESET_SIZE		SZ_4K
 
 #define TEGRA_FLOW_CTRL_BASE		0x60007000
 #define TEGRA_FLOW_CTRL_SIZE		20
@@ -857,6 +867,20 @@ defined(CONFIG_ARCH_TEGRA_12x_SOC))
 
 #endif
 
+#if defined(CONFIG_TEGRA_DEBUG_UARTA)
+# define TEGRA_DEBUG_UART_BASE TEGRA_UARTA_BASE
+#elif defined(CONFIG_TEGRA_DEBUG_UARTB)
+# define TEGRA_DEBUG_UART_BASE TEGRA_UARTB_BASE
+#elif defined(CONFIG_TEGRA_DEBUG_UARTC)
+# define TEGRA_DEBUG_UART_BASE TEGRA_UARTC_BASE
+#elif defined(CONFIG_TEGRA_DEBUG_UARTD)
+# define TEGRA_DEBUG_UART_BASE TEGRA_UARTD_BASE
+#elif defined(CONFIG_TEGRA_DEBUG_UARTE)
+# define TEGRA_DEBUG_UART_BASE TEGRA_UARTE_BASE
+#else
+# define TEGRA_DEBUG_UART_BASE 0
+#endif
+
 /* On TEGRA, many peripherals are very closely packed in
  * two 256 MB io windows (that actually only use about 64 KB
  * at the start of each).
@@ -945,7 +969,7 @@ defined(CONFIG_ARCH_TEGRA_12x_SOC))
 #define IO_PCIE_SIZE	0
 #endif
 
-#if defined(CONFIG_MTD_NOR_TEGRA) || defined(CONFIG_TEGRA_GMI)
+#if defined(CONFIG_TEGRA_GMI)
 #ifdef CONFIG_ARCH_TEGRA_2x_SOC
 #define IO_NOR_PHYS	0xD0000000
 #define IO_NOR_SIZE	(SZ_64M)
@@ -967,8 +991,11 @@ defined(CONFIG_ARCH_TEGRA_12x_SOC))
 /* Virtual aperture limits are packed into the I/O space from the higest
    address to lowest with each aperture base address adjusted as necessary
    for proper section mapping boundary (2 MB) rounding. */
-
+#ifdef CONFIG_ARM64
+#define IO_LAST_ADDR		VMALLOC_END
+#else
 #define IO_LAST_ADDR		IOMEM(0xFEC00000)
+#endif
 #define IO_HOST1X_VIRT		IOMEM((IO_LAST_ADDR - IO_VIRT_ROUND_UP(IO_HOST1X_SIZE)))
 #define IO_SDMMC_VIRT		IOMEM((IO_HOST1X_VIRT - IO_VIRT_ROUND_UP(IO_SDMMC_SIZE)))
 #define IO_USB_VIRT		IOMEM((IO_SDMMC_VIRT - IO_VIRT_ROUND_UP(IO_USB_SIZE)))

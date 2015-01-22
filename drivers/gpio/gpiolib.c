@@ -184,11 +184,36 @@ struct gpio_chip *gpio_to_chip(unsigned gpio)
 }
 
 /* dynamic allocation of GPIOs, e.g. on a hotplugged device */
-static int gpiochip_find_base(int ngpio)
+static int gpiochip_find_base(struct gpio_chip *req_chip, int aliased_base)
 {
 	struct gpio_chip *chip;
-	int base = ARCH_NR_GPIOS - ngpio;
+	int ngpio = req_chip->ngpio;
+	int base = -1;
 
+	if (aliased_base >= 0) {
+		int start_gpio = aliased_base;
+		int end_gpio = aliased_base + req_chip->ngpio;
+
+		/* Check if aliased base is not already allocated */
+		list_for_each_entry(chip, &gpio_chips, list) {
+			if (chip->base > end_gpio)
+				continue;
+
+			if ((chip->base < start_gpio) &&
+				((chip->base + chip->ngpio) < start_gpio))
+					continue;
+			pr_err("GPIO %d to %d is already allocated\n",
+					start_gpio, end_gpio);
+			aliased_base = -1;
+			break;
+		}
+		base = aliased_base;
+	}
+
+	if (base >= 0)
+		goto found;
+
+	base = ARCH_NR_GPIOS - ngpio;
 	list_for_each_entry_reverse(chip, &gpio_chips, list) {
 		/* found a free space? */
 		if (chip->base + chip->ngpio <= base)
@@ -198,6 +223,7 @@ static int gpiochip_find_base(int ngpio)
 			base = chip->base - ngpio;
 	}
 
+found:
 	if (gpio_is_valid(base)) {
 		pr_debug("%s: found new base at %d\n", __func__, base);
 		return base;
@@ -1174,6 +1200,7 @@ int gpiochip_add(struct gpio_chip *chip)
 	int		status = 0;
 	unsigned	id;
 	int		base = chip->base;
+	int		aliased_base = -1;
 
 	if ((!gpio_is_valid(base) || !gpio_is_valid(base + chip->ngpio - 1))
 			&& base >= 0) {
@@ -1181,10 +1208,15 @@ int gpiochip_add(struct gpio_chip *chip)
 		goto fail;
 	}
 
+#ifdef CONFIG_OF
+	if (chip->of_node)
+		aliased_base = of_alias_get_id(chip->of_node, "gpio");
+#endif
+
 	spin_lock_irqsave(&gpio_lock, flags);
 
 	if (base < 0) {
-		base = gpiochip_find_base(chip->ngpio);
+		base = gpiochip_find_base(chip, aliased_base);
 		if (base < 0) {
 			status = base;
 			goto unlock;
@@ -1231,7 +1263,7 @@ int gpiochip_add(struct gpio_chip *chip)
 	if (status)
 		goto fail;
 
-	pr_debug("gpiochip_add: registered GPIOs %d to %d on device: %s\n",
+	pr_info("gpiochip_add: registered GPIOs %d to %d on device: %s\n",
 		chip->base, chip->base + chip->ngpio - 1,
 		chip->label ? : "generic");
 

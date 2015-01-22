@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2010-2013, NVIDIA CORPORATION. All rights reserved.
+ * Copyright (c) 2010-2014, NVIDIA CORPORATION. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify it
  * under the terms and conditions of the GNU General Public License,
@@ -19,12 +19,17 @@
 
 #include "iomap.h"
 
-#ifndef CONFIG_TEGRA_USE_SECURE_KERNEL
-/* FIXME: The code associated with this should be removed if our change to
-   save the diagnostic regsiter in the CPU context is accepted. */
-#define USE_TEGRA_DIAG_REG_SAVE	1
-#else
-#define USE_TEGRA_DIAG_REG_SAVE	0
+#ifndef __ASSEMBLY__
+enum {
+	TEGRA_ID_CPU_SUSPEND_LP0 = 1,
+	TEGRA_ID_CPU_SUSPEND_LP1 = 2,
+	TEGRA_ID_CPU_SUSPEND_LP1_STOP_MCCLK = 3,
+	TEGRA_ID_CPU_SUSPEND_CLUSTER = 4,
+	TEGRA_ID_CPU_SUSPEND_STDBY = 5,
+};
+
+#define TEGRA_PWR_DN_AFFINITY_CPU	0
+#define TEGRA_PWR_DN_AFFINITY_CLUSTER	1
 #endif
 
 #define TEGRA_POWER_LP1_AUDIO		(1 << 25) /* do not turn off pll-p in LP1 */
@@ -195,26 +200,30 @@
 1002:	ldr	\tmp, [\base]
 	sub	\tmp, \tmp, \rn
 	ands	\tmp, \tmp, #0x80000000
-	dmb
+	dmb	sy
 	bne	1002b
 .endm
 
 /* returns the offset of the flow controller halt register for a cpu */
 .macro cpu_to_halt_reg rd, rcpu
 	cmp	\rcpu, #0
-	subne	\rd, \rcpu, #1
-	movne	\rd, \rd, lsl #3
-	addne	\rd, \rd, #0x14
-	moveq	\rd, #0
+	mov	\rd, #0
+	beq	1001f
+	sub	\rd, \rcpu, #1
+	lsl	\rd, \rd, #3
+	add	\rd, \rd, #0x14
+1001:
 .endm
 
 /* returns the offset of the flow controller csr register for a cpu */
 .macro cpu_to_csr_reg rd, rcpu
 	cmp	\rcpu, #0
-	subne	\rd, \rcpu, #1
-	movne	\rd, \rd, lsl #3
-	addne	\rd, \rd, #0x18
-	moveq	\rd, #8
+	mov	\rd, #0x8
+	beq	1001f
+	sub	\rd, \rcpu, #1
+	lsl	\rd, \rd, #3
+	add	\rd, \rd, #0x18
+1001:
 .endm
 
 /* Issue a Dummy DVM op to make subsequent DSB issue a DVM_SYNC
@@ -231,14 +240,23 @@
 
 /* returns the ID of the current processor */
 .macro cpu_id, rd
+#ifndef CONFIG_ARM64
 	mrc	p15, 0, \rd, c0, c0, 5
 	and	\rd, \rd, #0xF
+#else
+	mrs	\rd, mpidr_el1
+	and	\rd, \rd, #0xF
+#endif
 .endm
 
 /* loads a 32-bit value into a register without a data access */
 .macro mov32, reg, val
+#ifndef CONFIG_ARM64
 	movw	\reg, #:lower16:\val
 	movt	\reg, #:upper16:\val
+#else
+	ldr	\reg, =\val
+#endif
 .endm
 
 /* Macro to exit SMP coherency. */
@@ -346,7 +364,6 @@ int tegra3_sleep_cpu_secondary_finish(unsigned long int);
 int tegra3_stop_mc_clk_finish(unsigned long int);
 #endif
 
-#ifdef CONFIG_TEGRA_USE_SECURE_KERNEL
 extern unsigned long tegra_resume_timestamps_start;
 extern unsigned long tegra_resume_timestamps_end;
 #ifndef CONFIG_ARCH_TEGRA_11x_SOC
@@ -354,7 +371,7 @@ extern unsigned long tegra_resume_smc_entry_time;
 extern unsigned long tegra_resume_smc_exit_time;
 #endif
 extern unsigned long tegra_resume_entry_time;
-#endif
+
 #if defined(CONFIG_CACHE_L2X0) && defined(CONFIG_PM_SLEEP)
 extern unsigned long tegra_resume_l2_init;
 #endif

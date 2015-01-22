@@ -42,6 +42,7 @@
 
 #include <asm/page.h>
 #include <asm/cacheflush.h>
+#include <asm/outercache.h>
 #include <asm/dma-iommu.h>
 
 #include <mach/tegra_smmu.h>
@@ -108,7 +109,7 @@ enum {
 #define SMMU_PTC_FLUSH				0x34
 #define SMMU_PTC_FLUSH_TYPE_ALL			0
 #define SMMU_PTC_FLUSH_TYPE_ADR			1
-#define SMMU_PTC_FLUSH_ADR_SHIFT		4
+#define SMMU_PTC_FLUSH_ADR_MASK			0xfffffff0
 
 #define SMMU_PTC_FLUSH_1			0x9b8
 
@@ -140,6 +141,9 @@ enum {
 #define AHB_XBAR_CTRL				0xe0
 #define AHB_XBAR_CTRL_SMMU_INIT_DONE_DONE	1
 #define AHB_XBAR_CTRL_SMMU_INIT_DONE_SHIFT	17
+#define AHB_MASTER_SWID_0			0x18
+#define AHB_MASTER_SELECT_SDMMC		(BIT(9) | BIT(12) \
+						| BIT(19) | BIT(20))
 
 #define SMMU_NUM_ASIDS				4
 #define SMMU_NUM_ASIDS_TEGRA12			128
@@ -212,75 +216,6 @@ enum {
 #define SMMU_ASID_ENABLE(asid)	((asid) | (1 << 31))
 #define SMMU_ASID_DISABLE	0
 #define SMMU_ASID_ASID(n)	((n) & ~SMMU_ASID_ENABLE(0))
-
-/* FIXME: client ID, only valid for T124 */
-#define CSR_PTCR 0
-#define CSR_DISPLAY0A 1
-#define CSR_DISPLAY0AB 2
-#define CSR_DISPLAY0B 3
-#define CSR_DISPLAY0BB 4
-#define CSR_DISPLAY0C 5
-#define CSR_DISPLAY0CB 6
-#define CSR_AFIR 14
-#define CSR_AVPCARM7R 15
-#define CSR_DISPLAYHC 16
-#define CSR_DISPLAYHCB 17
-#define CSR_HDAR 21
-#define CSR_HOST1XDMAR 22
-#define CSR_HOST1XR 23
-#define CSR_MSENCSRD 28
-#define CSR_PPCSAHBDMAR 29
-#define CSR_PPCSAHBSLVR 30
-#define CSR_SATAR 31
-#define CSR_VDEBSEVR 34
-#define CSR_VDEMBER 35
-#define CSR_VDEMCER 36
-#define CSR_VDETPER 37
-#define CSR_MPCORELPR 38
-#define CSR_MPCORER 39
-#define CSW_MSENCSWR 43
-#define CSW_AFIW 49
-#define CSW_AVPCARM7W 50
-#define CSW_HDAW 53
-#define CSW_HOST1XW 54
-#define CSW_MPCORELPW 56
-#define CSW_MPCOREW 57
-#define CSW_PPCSAHBDMAW 59
-#define CSW_PPCSAHBSLVW 60
-#define CSW_SATAW 61
-#define CSW_VDEBSEVW 62
-#define CSW_VDEDBGW 63
-#define CSW_VDEMBEW 64
-#define CSW_VDETPMW 65
-#define CSR_ISPRA 68
-#define CSW_ISPWA 70
-#define CSW_ISPWB 71
-#define CSR_XUSB_HOSTR 74
-#define CSW_XUSB_HOSTW 75
-#define CSR_XUSB_DEVR 76
-#define CSW_XUSB_DEVW 77
-#define CSR_ISPRAB 78
-#define CSW_ISPWAB 80
-#define CSW_ISPWBB 81
-#define CSR_TSECSRD 84
-#define CSW_TSECSWR 85
-#define CSR_A9AVPSCR 86
-#define CSW_A9AVPSCW 87
-#define CSR_GPUSRD 88
-#define CSW_GPUSWR 89
-#define CSR_DISPLAYT 90
-#define CSR_SDMMCRA 96
-#define CSR_SDMMCRAA 97
-#define CSR_SDMMCR 98
-#define CSR_SDMMCRAB 99
-#define CSW_SDMMCWA 100
-#define CSW_SDMMCWAA 101
-#define CSW_SDMMCW 102
-#define CSW_SDMMCWAB 103
-#define CSR_VICSRD 108
-#define CSW_VICSWR 109
-#define CSW_VIW 114
-#define CSR_DISPLAYD 115
 
 #define SMMU_CLIENT_CONF0	0x40
 
@@ -438,7 +373,7 @@ static void smmu_client_ordered(struct smmu_device *smmu)
 #define FLUSH_CPU_DCACHE(va, page, size)	\
 	do {	\
 		unsigned long _pa_ = VA_PAGE_TO_PA(va, page);		\
-		__cpuc_flush_dcache_area((void *)(va), (size_t)(size));	\
+		FLUSH_DCACHE_AREA((void *)(va), (size_t)(size));	\
 		outer_flush_range(_pa_, _pa_+(size_t)(size));		\
 	} while (0)
 
@@ -452,13 +387,13 @@ static void smmu_client_ordered(struct smmu_device *smmu)
 
 static u64 tegra_smmu_of_get_swgids(struct device *dev)
 {
-	size_t bytes;
+	size_t bytes = 0;
 	const char *propname = "nvidia,memory-clients";
 	const __be32 *prop;
 	int i;
 	u64 swgids = 0;
 
-	prop = of_get_property(dev->of_node, propname, &bytes);
+	prop = of_get_property(dev->of_node, propname, (int *)&bytes);
 	if (!prop || !bytes)
 		return 0;
 
@@ -587,8 +522,10 @@ static void smmu_setup_regs(struct smmu_device *smmu)
 
 	smmu_write(smmu, val, SMMU_CACHE_CONFIG(_TLB));
 
-	if (IS_ENABLED(CONFIG_ARCH_TEGRA_12x_SOC) &&
-	    (tegra_get_chipid() == TEGRA_CHIPID_TEGRA12))
+	if ((IS_ENABLED(CONFIG_ARCH_TEGRA_12x_SOC) &&
+	    (tegra_get_chipid() == TEGRA_CHIPID_TEGRA12)) ||
+		(IS_ENABLED(CONFIG_ARCH_TEGRA_13x_SOC) &&
+	    (tegra_get_chipid() == TEGRA_CHIPID_TEGRA13)))
 		smmu_client_ordered(smmu);
 
 	smmu_flush_regs(smmu, 1);
@@ -601,6 +538,9 @@ static void smmu_setup_regs(struct smmu_device *smmu)
 			AHB_XBAR_CTRL_SMMU_INIT_DONE_SHIFT;
 		ahb_write(smmu, val, AHB_XBAR_CTRL);
 	}
+	/* On T114, Set PPCS1 ASID for SDMMC */
+	if (tegra_get_chipid() == TEGRA_CHIPID_TEGRA11)
+		ahb_write(smmu, AHB_MASTER_SELECT_SDMMC, AHB_MASTER_SWID_0);
 }
 
 
@@ -614,13 +554,17 @@ static void __smmu_flush_ptc(struct smmu_device *smmu, u32 *pte,
 		return;
 	}
 
-	if (IS_ENABLED(CONFIG_ARCH_TEGRA_12x_SOC) &&
-		(tegra_get_chipid() == TEGRA_CHIPID_TEGRA12)) {
+	if ((IS_ENABLED(CONFIG_ARCH_TEGRA_12x_SOC) &&
+		(tegra_get_chipid() == TEGRA_CHIPID_TEGRA12)) ||
+		(IS_ENABLED(CONFIG_ARCH_TEGRA_13x_SOC) &&
+		(tegra_get_chipid() == TEGRA_CHIPID_TEGRA13))) {
 		val = VA_PAGE_TO_PA_HI(pte, page);
 		smmu_write(smmu, val, SMMU_PTC_FLUSH_1);
 	}
 
-	val = SMMU_PTC_FLUSH_TYPE_ADR | VA_PAGE_TO_PA(pte, page);
+	val = SMMU_PTC_FLUSH_TYPE_ADR |
+		(VA_PAGE_TO_PA(pte, page) & SMMU_PTC_FLUSH_ADR_MASK);
+
 	smmu_write(smmu, val, SMMU_PTC_FLUSH);
 }
 
@@ -722,7 +666,6 @@ static void free_ptbl(struct smmu_as *as, dma_addr_t iova, bool flush)
 	if (pdir[pdn] != _PDE_VACANT(pdn)) {
 		dev_dbg(as->smmu->dev, "pdn: %x\n", pdn);
 
-		ClearPageReserved(SMMU_EX_PTBL_PAGE(pdir[pdn]));
 		__free_page(SMMU_EX_PTBL_PAGE(pdir[pdn]));
 		pdir[pdn] = _PDE_VACANT(pdn);
 		FLUSH_CPU_DCACHE(&pdir[pdn], as->pdir_page, sizeof pdir[pdn]);
@@ -812,7 +755,6 @@ static void free_pdir(struct smmu_as *as)
 		free_ptbl(as, addr, 1);
 		addr += SMMU_PAGE_SIZE * SMMU_PTBL_COUNT;
 	}
-	ClearPageReserved(as->pdir_page);
 	__free_page(as->pdir_page);
 	as->pdir_page = NULL;
 	devm_kfree(dev, as->pte_count);
@@ -842,7 +784,6 @@ static struct page *alloc_ptbl(struct smmu_as *as, dma_addr_t iova, bool flush)
 	if (!page)
 		return NULL;
 
-	SetPageReserved(page);
 	ptbl = (u32 *)page_address(page);
 	if (IS_ENABLED(CONFIG_TEGRA_IOMMU_SMMU_LINEAR)) {
 		for (i = 0; i < SMMU_PTBL_COUNT; i++) {
@@ -951,7 +892,6 @@ static int alloc_pdir(struct smmu_as *as)
 	as->pdir_page = page;
 	as->pte_count = cnt;
 
-	SetPageReserved(as->pdir_page);
 	pdir = page_address(as->pdir_page);
 
 	for (pdn = 0; pdn < SMMU_PDIR_COUNT; pdn++)
@@ -1046,7 +986,7 @@ static size_t __smmu_iommu_unmap_largepage(struct smmu_as *as, dma_addr_t iova)
 }
 
 static int __smmu_iommu_map_pfn(struct smmu_as *as, dma_addr_t iova,
-				unsigned long pfn, int prot)
+				unsigned long pfn, unsigned long prot)
 {
 	struct smmu_device *smmu = as->smmu;
 	u32 *pte;
@@ -1074,7 +1014,7 @@ static int __smmu_iommu_map_pfn(struct smmu_as *as, dma_addr_t iova,
 }
 
 static int __smmu_iommu_map_page(struct smmu_as *as, dma_addr_t iova,
-				 phys_addr_t pa, int prot)
+				 phys_addr_t pa, unsigned long prot)
 {
 	unsigned long pfn = __phys_to_pfn(pa);
 
@@ -1082,7 +1022,7 @@ static int __smmu_iommu_map_page(struct smmu_as *as, dma_addr_t iova,
 }
 
 static int __smmu_iommu_map_largepage(struct smmu_as *as, dma_addr_t iova,
-				 phys_addr_t pa, int prot)
+				 phys_addr_t pa, unsigned long prot)
 {
 	int pdn = SMMU_ADDR_TO_PDN(iova);
 	u32 *pdir = (u32 *)page_address(as->pdir_page);
@@ -1104,13 +1044,13 @@ static int __smmu_iommu_map_largepage(struct smmu_as *as, dma_addr_t iova,
 }
 
 static int smmu_iommu_map(struct iommu_domain *domain, unsigned long iova,
-			  phys_addr_t pa, size_t bytes, int prot)
+			  phys_addr_t pa, size_t bytes, unsigned long prot)
 {
 	struct smmu_as *as = domain->priv;
 	unsigned long flags;
 	int err;
 	int (*fn)(struct smmu_as *as, dma_addr_t iova, phys_addr_t pa,
-		  int prot);
+		  unsigned long prot);
 
 	dev_dbg(as->smmu->dev, "[%d] %08lx:%pa\n", as->asid, iova, &pa);
 
@@ -1122,7 +1062,7 @@ static int smmu_iommu_map(struct iommu_domain *domain, unsigned long iova,
 		fn = __smmu_iommu_map_largepage;
 		break;
 	default:
-		WARN(1,  "%d not supported\n", bytes);
+		WARN(1,  "%lld not supported\n", (u64)bytes);
 		return -EINVAL;
 	}
 
@@ -1133,7 +1073,7 @@ static int smmu_iommu_map(struct iommu_domain *domain, unsigned long iova,
 }
 
 static int smmu_iommu_map_pages(struct iommu_domain *domain, unsigned long iova,
-				struct page **pages, size_t total, int prot)
+				struct page **pages, size_t total, unsigned long prot)
 {
 	struct smmu_as *as = domain->priv;
 	struct smmu_device *smmu = as->smmu;
@@ -1203,8 +1143,11 @@ out:
 	return err;
 }
 
+#define sg_num_pages(sg)					\
+	(PAGE_ALIGN((sg)->offset + (sg)->length) >> PAGE_SHIFT)
+
 static int smmu_iommu_map_sg(struct iommu_domain *domain, unsigned long iova,
-			     struct scatterlist *sgl, int npages, int prot)
+			     struct scatterlist *sgl, int npages, unsigned long prot)
 {
 	int err = 0;
 	unsigned long iova_base = iova;
@@ -1214,8 +1157,7 @@ static int smmu_iommu_map_sg(struct iommu_domain *domain, unsigned long iova,
 	struct smmu_device *smmu = as->smmu;
 	int attrs = as->pte_attr;
 	size_t total = npages;
-	size_t sg_remaining =
-		PAGE_ALIGN(sgl->offset + sgl->length) >> PAGE_SHIFT;
+	size_t sg_remaining = sg_num_pages(sgl);
 	unsigned long sg_pfn = page_to_pfn(sg_page(sgl));
 
 	if (dma_get_attr(DMA_ATTR_READ_ONLY, (struct dma_attrs *)prot))
@@ -1262,9 +1204,7 @@ static int smmu_iommu_map_sg(struct iommu_domain *domain, unsigned long iova,
 			sgl = sg_next(sgl);
 			if (sgl) {
 				sg_pfn = page_to_pfn(sg_page(sgl));
-				sg_remaining =
-					PAGE_ALIGN(sgl->offset + sgl->length)
-					>> PAGE_SHIFT;
+				sg_remaining = sg_num_pages(sgl);
 			}
 		}
 
@@ -1400,10 +1340,10 @@ static int smmu_iommu_attach_dev(struct iommu_domain *domain,
 		dma_set_attr(DMA_ATTR_SKIP_CPU_SYNC, &attrs);
 		err = dma_map_linear_attrs(dev, area->start, size, 0, &attrs);
 		if (err == DMA_ERROR_CODE)
-			dev_err(dev, "Failed IOVA linear map %pa(%x)\n",
+			dev_err(dev, "Failed IOVA linear map %pa(%zx)\n",
 				&area->start, size);
 		else
-			dev_info(dev, "IOVA linear map %pa(%x)\n",
+			dev_info(dev, "IOVA linear map %pa(%zx)\n",
 				 &area->start, size);
 
 		area++;
@@ -1549,10 +1489,13 @@ static void smmu_iommu_domain_destroy(struct iommu_domain *domain)
 	}
 
 	if (!list_empty(&as->client)) {
-		struct smmu_client *c;
-
-		list_for_each_entry(c, &as->client, list)
+		struct smmu_client *c, *tmp_c;
+		list_for_each_entry_safe(c, tmp_c, &as->client, list) {
+			dev_err(smmu->dev,
+					"detaching %s because iommu domain is destroyed!\n",
+					dev_name(c->dev));
 			smmu_iommu_detach_dev(domain, c->dev);
+		}
 	}
 
 	spin_unlock_irqrestore(&as->lock, flags);
@@ -1639,8 +1582,8 @@ static ssize_t smmu_debugfs_stats_write(struct file *file,
 		break;
 	}
 
-	dev_dbg(smmu->dev, "%s() %08x, %08x @%08x\n", __func__,
-		val, smmu_read(smmu, offs), offs);
+	dev_dbg(smmu->dev, "%s() %08x, %08x @%08llx\n", __func__,
+		val, smmu_read(smmu, offs), (u64)offs);
 
 	return count;
 }
@@ -1661,8 +1604,8 @@ static int smmu_debugfs_stats_show(struct seq_file *s, void *v)
 		val = smmu_read(smmu, offs);
 		seq_printf(s, "%s:%08x ", stats[i], val);
 
-		dev_dbg(smmu->dev, "%s() %s %08x @%08x\n", __func__,
-			stats[i], val, offs);
+		dev_dbg(smmu->dev, "%s() %s %08x @%08llx\n", __func__,
+			stats[i], val, (u64)offs);
 	}
 	seq_printf(s, "\n");
 	return 0;
@@ -1687,6 +1630,135 @@ static void smmu_debugfs_delete(struct smmu_device *smmu)
 	kfree(smmu->debugfs_info);
 }
 
+struct smmu_addr_marker {
+	u32 start_address;
+	const char *name;
+};
+
+#define SZ_3G	(SZ_1G + SZ_2G)
+static struct smmu_addr_marker address_markers[] = {
+	{ 0,		"0x0000:0000", },
+	{ SZ_1G,	"0x4000:0000", },
+	{ SZ_2G,	"0x8000:0000", },
+	{ SZ_3G,	"0xc000:0000", },
+	{ -1,			NULL, },
+};
+
+struct smmu_pg_state {
+	struct seq_file *seq;
+	const struct smmu_addr_marker *marker;
+	u32 start_address;
+	unsigned level;
+	u32 current_prot;
+};
+
+static void smmu_dump_attr(struct smmu_pg_state *st)
+{
+	int i;
+	const char prot_set[] = "RW-";
+	const char prot_clr[] = "--S";
+
+	for (i = 0; i < ARRAY_SIZE(prot_set); i++) {
+		if (st->current_prot & BIT(31 - i))
+			seq_printf(st->seq, "%c", prot_set[i]);
+		else
+			seq_printf(st->seq, "%c", prot_clr[i]);
+	}
+}
+
+static void smmu_note_page(struct smmu_pg_state *st, u32 addr, int level,
+			   u32 val)
+{
+	static const char units[] = "KMGTPE";
+	u32 prot = val & _MASK_ATTR;
+
+	if (!st->level) {
+		st->level = level;
+		st->current_prot = prot;
+		seq_printf(st->seq, "---[ %s ]---\n", st->marker->name);
+	} else if (prot != st->current_prot || level != st->level ||
+		   addr >= st->marker[1].start_address) {
+		const char *unit = units;
+		unsigned long delta;
+
+		if (st->current_prot) {
+			seq_printf(st->seq, "0x%08x-0x%08x   ",
+				   st->start_address, addr);
+
+			delta = (addr - st->start_address) >> 10;
+			while (!(delta & 1023) && unit[1]) {
+				delta >>= 10;
+				unit++;
+			}
+			seq_printf(st->seq, "%9lu%c ", delta, *unit);
+			smmu_dump_attr(st);
+			seq_puts(st->seq, "\n");
+		}
+
+		if (addr >= st->marker[1].start_address) {
+			st->marker++;
+			seq_printf(st->seq, "---[ %s ]---\n", st->marker->name);
+		}
+
+		st->start_address = addr;
+		st->current_prot = prot;
+		st->level = level;
+	}
+}
+
+static void smmu_walk_pte(struct smmu_pg_state *st, u32 *pgd, u32 start)
+{
+	int i;
+	u32 *pte = page_address(SMMU_EX_PTBL_PAGE(*pgd));
+
+	for (i = 0; i < PTRS_PER_PTE; i++, pte++)
+		smmu_note_page(st, start + i * PAGE_SIZE, 2, *pte);
+}
+
+static void smmu_walk_pgd(struct seq_file *m, struct smmu_as *as)
+{
+	int i;
+	u32 *pgd;
+	struct smmu_pg_state st = {
+		.seq	= m,
+		.marker	= address_markers,
+	};
+
+	if (!pfn_valid(page_to_pfn(as->pdir_page)))
+		return;
+
+	pgd = page_address(as->pdir_page);
+	for (i = 0; i < SMMU_PDIR_COUNT; i++, pgd++) {
+		u32 addr = i * SMMU_PAGE_SIZE * SMMU_PTBL_COUNT;
+
+		if (*pgd & _PDE_NEXT)
+			smmu_walk_pte(&st, pgd, addr);
+		else
+			smmu_note_page(&st, addr, 1, *pgd);
+	}
+
+	smmu_note_page(&st, 0, 0, 0);
+}
+
+static int smmu_ptdump_show(struct seq_file *m, void *v)
+{
+	smmu_walk_pgd(m, m->private);
+	return 0;
+}
+
+static int smmu_ptdump_open(struct inode *inode, struct file *file)
+{
+	return single_open(file, smmu_ptdump_show, inode->i_private);
+}
+
+static const struct file_operations smmu_ptdump_fops = {
+	.open		= smmu_ptdump_open,
+	.read		= seq_read,
+	.llseek		= seq_lseek,
+	.release	= single_release,
+};
+
+
 static void smmu_debugfs_create(struct smmu_device *smmu)
 {
 	int i;
@@ -1703,6 +1775,17 @@ static void smmu_debugfs_create(struct smmu_device *smmu)
 	if (!root)
 		goto err_out;
 	smmu->debugfs_root = root;
+
+	for (i = 0; i < smmu->num_as; i++) {
+		struct dentry *pt;
+		char name[20];
+
+		sprintf(name, "page_tables%03d", i);
+		pt = debugfs_create_file(name, 0400, smmu->debugfs_root,
+					 smmu->as + i, &smmu_ptdump_fops);
+		if (!pt)
+			goto err_out;
+	}
 
 	for (i = 0; i < ARRAY_SIZE(smmu_debugfs_mc); i++) {
 		int j;
@@ -1808,7 +1891,8 @@ static int tegra_smmu_probe(struct platform_device *pdev)
 	}
 
 	num_as = SMMU_NUM_ASIDS;
-	if (tegra_get_chipid() == TEGRA_CHIPID_TEGRA12)
+	if (tegra_get_chipid() == TEGRA_CHIPID_TEGRA12 ||
+		tegra_get_chipid() == TEGRA_CHIPID_TEGRA13)
 		num_as = SMMU_NUM_ASIDS_TEGRA12;
 
 	bytes = sizeof(*smmu) + num_as * sizeof(*smmu->as);
@@ -1840,8 +1924,10 @@ static int tegra_smmu_probe(struct platform_device *pdev)
 	if (IS_ENABLED(CONFIG_ARCH_TEGRA_14x_SOC) &&
 	    (tegra_get_chipid() == TEGRA_CHIPID_TEGRA14))
 		smmu->swgids = 0x0000000001865bfe;
-	if (IS_ENABLED(CONFIG_ARCH_TEGRA_12x_SOC) &&
-	    (tegra_get_chipid() == TEGRA_CHIPID_TEGRA12)) {
+	if ((IS_ENABLED(CONFIG_ARCH_TEGRA_12x_SOC) &&
+	    (tegra_get_chipid() == TEGRA_CHIPID_TEGRA12)) ||
+	    (IS_ENABLED(CONFIG_ARCH_TEGRA_13x_SOC) &&
+	    (tegra_get_chipid() == TEGRA_CHIPID_TEGRA13))) {
 		smmu->swgids = 0x00000001fffecdcf;
 		smmu->num_translation_enable = 4;
 		smmu->num_asid_security = 8;

@@ -1039,8 +1039,8 @@ static void seq_print_dma_areas(struct seq_file *s, void *bitmap,
 
 		end = find_next_zero_bit(bitmap, bits, pos);
 		start_addr = bit_to_addr(pos, base, order);
-		end_addr = bit_to_addr(end, base, order);
-		seq_printf(s, "    %pa-%pa pages=%d\n",
+		end_addr = bit_to_addr(end, base, order) - 1;
+		seq_printf(s, "    %pa-%pa pages=%zu\n",
 			   &start_addr, &end_addr, (end - pos) << order);
 	}
 }
@@ -1696,8 +1696,7 @@ static void *arm_iommu_alloc_attrs(struct device *dev, size_t size,
 
 	size = PAGE_ALIGN(size);
 
-	if (gfp & GFP_ATOMIC)
-
+	if (!(gfp & __GFP_WAIT))
 		return __iommu_alloc_atomic(dev, size, handle, attrs);
 
 	pages = __iommu_alloc_buffer(dev, size, gfp, attrs);
@@ -2050,7 +2049,7 @@ static dma_addr_t arm_coherent_iommu_map_page(struct device *dev, struct page *p
 	if (ret < 0)
 		goto fail;
 
-	trace_dmadebug_map_page(dev, dma_addr, len, page);
+	trace_dmadebug_map_page(dev, dma_addr + offset, size, page);
 	return dma_addr + offset;
 fail:
 	__free_iova(mapping, dma_addr, len, attrs);
@@ -2142,12 +2141,11 @@ static void arm_coherent_iommu_unmap_page(struct device *dev, dma_addr_t handle,
 	if (!iova)
 		return;
 
+	trace_dmadebug_unmap_page(dev, handle, size,
+		  phys_to_page(iommu_iova_to_phys(mapping->domain, handle)));
 	pg_iommu_unmap(mapping->domain, iova, len, (int)attrs);
 	if (!dma_get_attr(DMA_ATTR_SKIP_FREE_IOVA, attrs))
 		__free_iova(mapping, iova, len, attrs);
-
-	trace_dmadebug_unmap_page(dev, handle, size,
-		  phys_to_page(iommu_iova_to_phys(mapping->domain, handle)));
 }
 
 /**
@@ -2175,6 +2173,8 @@ static void arm_iommu_unmap_page(struct device *dev, dma_addr_t handle,
 	if (!dma_get_attr(DMA_ATTR_SKIP_CPU_SYNC, attrs))
 		__dma_page_dev_to_cpu(page, offset, size, dir);
 
+	trace_dmadebug_unmap_page(dev, handle, size,
+		  phys_to_page(iommu_iova_to_phys(mapping->domain, handle)));
 	pg_iommu_unmap(mapping->domain, iova, len, (int)attrs);
 	if (!dma_get_attr(DMA_ATTR_SKIP_FREE_IOVA, attrs))
 		__free_iova(mapping, iova, len, attrs);
@@ -2255,6 +2255,12 @@ struct dma_map_ops iommu_coherent_ops = {
 
 	.set_dma_mask	= arm_dma_set_mask,
 };
+
+bool device_is_iommuable(struct device *dev)
+{
+	return (dev->archdata.dma_ops == &iommu_ops) ||
+		(dev->archdata.dma_ops == &iommu_coherent_ops);
+}
 
 /**
  * arm_iommu_create_mapping

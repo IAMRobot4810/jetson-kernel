@@ -2,12 +2,11 @@
  * arch/arm/mach-tegra/include/mach/clock.h
  *
  * Copyright (C) 2010 Google, Inc.
- * Copyright (c) 2012 NVIDIA CORPORATION.  All rights reserved.
  *
  * Author:
  *	Colin Cross <ccross@google.com>
  *
- * Copyright (c) 2010-2013, NVIDIA CORPORATION.  All rights reserved.
+ * Copyright (c) 2010-2014, NVIDIA Corporation.  All rights reserved.
  *
  * This software is licensed under the terms of the GNU General Public
  * License version 2, as published by the Free Software Foundation, and
@@ -174,6 +173,7 @@ struct clk {
 	unsigned long		min_rate;
 	bool			auto_dvfs;
 	bool			cansleep;
+	bool			set_disabled_div;
 	u32			flags;
 	const char		*name;
 
@@ -276,6 +276,7 @@ struct clk {
 	struct mutex *cross_clk_mutex;
 	struct mutex mutex;
 	spinlock_t spinlock;
+	unsigned long fixed_target_rate;
 };
 
 #else
@@ -363,6 +364,7 @@ void tegra_init_max_rate(struct clk *c, unsigned long max_rate);
 void tegra_clk_preset_emc_monitor(unsigned long rate);
 void tegra_periph_clk_safe_rate_init(struct clk *c);
 void tegra_clk_verify_parents(void);
+void tegra_clk_set_disabled_div_all(void);
 void clk_init(struct clk *clk);
 unsigned long tegra_clk_measure_input_freq(void);
 unsigned long clk_get_rate_locked(struct clk *c);
@@ -380,6 +382,8 @@ long clk_round_rate_locked(struct clk *c, unsigned long rate);
 int tegra_clk_shared_bus_update(struct clk *c);
 void tegra3_set_cpu_skipper_delay(int delay);
 unsigned long tegra_clk_measure_input_freq(void);
+int clk_enable_locked(struct clk *c);
+void clk_disable_locked(struct clk *c);
 #ifdef CONFIG_ARCH_TEGRA_2x_SOC
 static inline bool tegra_clk_is_parent_allowed(struct clk *c, struct clk *p)
 { return true; }
@@ -405,6 +409,17 @@ struct clk *tegra_get_clock_by_name(const char *name);
 void tegra_clk_init_from_table(struct tegra_clk_init_table *table);
 
 #ifndef CONFIG_COMMON_CLK
+static inline void tegra_dfll_set_cl_dvfs_data(struct clk *c, void *cld)
+{
+	if (c->flags & DFLL)
+		c->u.dfll.cl_dvfs = cld;
+}
+
+static inline void *tegra_dfll_get_cl_dvfs_data(struct clk *c)
+{
+	return c->flags & DFLL ? c->u.dfll.cl_dvfs : ERR_PTR(-ENODATA);
+}
+
 static inline bool clk_is_auto_dvfs(struct clk *c)
 {
 	return c->auto_dvfs;
@@ -418,6 +433,11 @@ static inline bool clk_is_dvfs(struct clk *c)
 static inline bool clk_cansleep(struct clk *c)
 {
 	return c->cansleep;
+}
+
+static inline bool clk_can_set_disabled_div(struct clk *c)
+{
+	return c->set_disabled_div;
 }
 
 static inline void clk_lock_save(struct clk *c, unsigned long *flags)
@@ -481,6 +501,12 @@ static inline int tegra_update_mselect_rate(unsigned long cpu_rate)
 { return 0; }
 #else
 int tegra_update_mselect_rate(unsigned long cpu_rate);
+#endif
+#ifdef CONFIG_ARCH_TEGRA_13x_SOC
+unsigned long tegra_emc_cpu_limit(unsigned long cpu_rate);
+#else
+static inline unsigned long tegra_emc_cpu_limit(unsigned long cpu_rate)
+{ return 0; }
 #endif
 #else
 static inline unsigned long tegra_emc_to_cpu_ratio(unsigned long cpu_rate)

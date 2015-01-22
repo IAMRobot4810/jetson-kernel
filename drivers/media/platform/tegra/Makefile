@@ -1,11 +1,14 @@
 GCOV_PROFILE := y
 
-#subdir-ccflags-y := -Werror
+subdir-ccflags-$(CONFIG_ARM) := -Werror
 #
 # Makefile for the video capture/playback device drivers.
 #
 obj-y				+= avp/
 obj-y				+= cam_dev/
+ccflags-y	+= -Idrivers/video/tegra/camera
+ccflags-y	+= -Idrivers/video/tegra/host
+ccflags-y	+= -Idrivers/video/tegra/host/isp
 obj-$(CONFIG_TEGRA_MEDIASERVER)	+= mediaserver/
 obj-$(CONFIG_TEGRA_NVAVP)	+= nvavp/
 obj-$(CONFIG_TEGRA_DTV)		+= tegra_dtv.o
@@ -33,6 +36,7 @@ obj-$(CONFIG_VIDEO_IMX091)	+= imx091.o nvc_utilities.o
 obj-$(CONFIG_VIDEO_IMX135)	+= imx135.o
 obj-$(CONFIG_VIDEO_IMX179)	+= imx179.o
 obj-$(CONFIG_VIDEO_IMX132)	+= imx132.o
+obj-$(CONFIG_VIDEO_AR0330)	+= ar0330.o
 obj-$(CONFIG_VIDEO_AR0261)	+= ar0261.o
 obj-$(CONFIG_DEBUG_FS)		+= nvc_debugfs.o
 obj-$(CONFIG_VIDEO_OV5693)	+= ov5693.o

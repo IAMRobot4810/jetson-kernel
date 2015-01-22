@@ -1,7 +1,7 @@
 /*
  * arch/arm/mach-tegra/board-loki.h
  *
- * Copyright (c) 2013, NVIDIA Corporation. All rights reserved.
+ * Copyright (c) 2013-2014, NVIDIA Corporation. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 2 as
@@ -31,11 +31,11 @@ int loki_sdhci_init(void);
 int loki_sensors_init(void);
 int loki_regulator_init(void);
 int loki_suspend_init(void);
-int loki_pmon_init(void);
 int loki_edp_init(void);
 int loki_rail_alignment_init(void);
 int loki_soctherm_init(void);
 int loki_emc_init(void);
+void loki_camera_auxdata(void *);
 
 /* Invensense MPU Definitions */
 #define MPU_GYRO_NAME			"mpu6050"
@@ -59,16 +59,6 @@ int loki_emc_init(void);
 
 #define PALMAS_TEGRA_GPIO_BASE	TEGRA_NR_GPIOS
 #define PALMAS_TEGRA_IRQ_BASE	TEGRA_NR_IRQS
-#define AS3722_GPIO_BASE	TEGRA_NR_GPIOS
-#define AS3722_GPIO_END	(AS3722_GPIO_BASE + AS3722_NUM_GPIO)
-
-/* PMU_TCA6416 GPIOs */
-#define PMU_TCA6416_GPIO_BASE   (AS3722_GPIO_END)
-#define PMU_TCA6416_GPIO(x)     (PMU_TCA6416_GPIO_BASE + x)
-#define PMU_TCA6416_NR_GPIOS    18
-/* External peripheral act as interrupt controller */
-/* AS3720 IRQs */
-#define AS3722_IRQ_BASE         TEGRA_NR_IRQS
 
 #define CAM_RSTN TEGRA_GPIO_PBB3
 #define CAM_FLASH_STROBE TEGRA_GPIO_PBB4
@@ -93,16 +83,6 @@ enum tegra_bb_type {
 #define UTMI2_PORT_OWNER_XUSB   0x2
 #define UTMI3_PORT_OWNER_XUSB   0x4
 #define HSIC1_PORT_OWNER_XUSB   0x8
-
-/* Touchscreen definitions */
-enum touch_panel_id {
-	TOUCH_PANEL_RESERVED = 0,
-	TOUCH_PANEL_WINTEK,
-	TOUCH_PANEL_TPK,
-	TOUCH_PANEL_TOUCHTURNS,
-	TOUCH_PANEL_THOR_WINTEK,
-	TOUCH_PANEL_LOKI_WINTEK_5_66_UNLAMIN,
-};
 
 #define TOUCH_GPIO_IRQ_RAYDIUM_SPI	TEGRA_GPIO_PK2
 #define TOUCH_GPIO_RST_RAYDIUM_SPI	TEGRA_GPIO_PK4

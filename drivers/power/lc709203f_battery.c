@@ -27,8 +27,7 @@
 #include <linux/power/battery-charger-gauge-comm.h>
 #include <linux/pm.h>
 #include <linux/jiffies.h>
-#include <linux/regmap.h>
-#include <linux/power/lc709203f_battery.h>
+#include <linux/interrupt.h>
 
 #define LC709203F_THERMISTOR_B		0x06
 #define LC709203F_INITIAL_RSOC		0x07
@@ -54,13 +53,25 @@
 #define LC709203F_BATTERY_LOW		15
 #define LC709203F_BATTERY_FULL		100
 
+struct lc709203f_platform_data {
+	const char *tz_name;
+	u32 initial_rsoc;
+	u32 appli_adjustment;
+	u32 thermistor_beta;
+	u32 therm_adjustment;
+	u32 threshold_soc;
+	u32 maximum_soc;
+	u32 alert_low_rsoc;
+	u32 alert_low_voltage;
+	bool support_battery_current;
+};
+
 struct lc709203f_chip {
 	struct i2c_client		*client;
 	struct delayed_work		work;
 	struct power_supply		battery;
 	struct lc709203f_platform_data	*pdata;
 	struct battery_gauge_dev	*bg_dev;
-	struct regmap			*regmap;
 
 	/* battery voltage */
 	int vcell;
@@ -73,95 +84,40 @@ struct lc709203f_chip {
 	/* battery capacity */
 	int capacity_level;
 
+	int temperature;
+
 	int lasttime_soc;
 	int lasttime_status;
 	int shutdown_complete;
 	int charge_complete;
 	struct mutex mutex;
-};
-
-struct lc709203f_chip *lc709203f_data;
-
-static const struct regmap_config lc709203f_regmap_config = {
-	.reg_bits		= 8,
-	.val_bits		= 8,
-	.max_register		= LC709203F_MAX_REGS,
+	int read_failed;
 };
 
 static int lc709203f_read_word(struct i2c_client *client, u8 reg)
 {
 	int ret;
-	u16 val;
 
-	struct lc709203f_chip *chip = i2c_get_clientdata(client);
-
-	mutex_lock(&chip->mutex);
-	if (chip && chip->shutdown_complete) {
-		mutex_unlock(&chip->mutex);
-		return -ENODEV;
-	}
-
-	ret = regmap_raw_read(chip->regmap, reg, (u8 *) &val, sizeof(val));
-	if (ret < 0) {
-		dev_err(&client->dev, "err reading reg: 0x%x, %d\n", reg, ret);
-		mutex_unlock(&chip->mutex);
-		return ret;
-	}
-
-	mutex_unlock(&chip->mutex);
-	return val;
-}
-
-static int lc709203f_read_byte(struct i2c_client *client, u8 reg)
-{
-	int ret;
-	u8 val;
-
-	struct lc709203f_chip *chip = i2c_get_clientdata(client);
-
-	mutex_lock(&chip->mutex);
-	if (chip && chip->shutdown_complete) {
-		mutex_unlock(&chip->mutex);
-		return -ENODEV;
-	}
-
-	ret = regmap_raw_read(chip->regmap, reg, (u8 *) &val, sizeof(val));
-	if (ret < 0) {
-		dev_err(&client->dev, "err reading reg: 0x%x\n, %d", reg, ret);
-		mutex_unlock(&chip->mutex);
-		return ret;
-	}
-
-	mutex_unlock(&chip->mutex);
-	return val;
-}
-
-
-static int lc709203f_write_byte(struct i2c_client *client, u8 reg, u8 value)
-{
-	struct lc709203f_chip *chip = i2c_get_clientdata(client);
-	int ret;
-
-	mutex_lock(&chip->mutex);
-	if (chip && chip->shutdown_complete) {
-		mutex_unlock(&chip->mutex);
-		return -ENODEV;
-	}
-
-	ret = regmap_write(chip->regmap, reg, value);
+	ret = i2c_smbus_read_word_data(client, reg);
 	if (ret < 0)
-		dev_err(&client->dev, "err writing 0x%0x, %d\n" , reg, ret);
-
-	mutex_unlock(&chip->mutex);
+		dev_err(&client->dev, "err reading reg: 0x%x, %d\n", reg, ret);
 	return ret;
 }
 
-static void lc709203f_work(struct work_struct *work)
+static int lc709203f_write_word(struct i2c_client *client, u8 reg, u16 value)
 {
-	struct lc709203f_chip *chip;
-	int val;
+	int ret;
 
-	chip = container_of(work, struct lc709203f_chip, work.work);
+	ret = i2c_smbus_write_word_data(client, reg, value);
+	if (ret < 0)
+		dev_err(&client->dev, "err writing 0x%0x, %d\n" , reg, ret);
+
+	return ret;
+}
+
+static int lc709203f_update_soc_voltage(struct lc709203f_chip *chip)
+{
+	int val;
 
 	val = lc709203f_read_word(chip->client, LC709203F_VOLTAGE);
 	if (val < 0)
@@ -173,9 +129,12 @@ static void lc709203f_work(struct work_struct *work)
 	if (val < 0)
 		dev_err(&chip->client->dev, "%s: err %d\n", __func__, val);
 	else
-		chip->soc = val;
+		chip->soc = battery_gauge_get_adjusted_soc(chip->bg_dev,
+				chip->pdata->threshold_soc,
+				chip->pdata->maximum_soc, val * 100);
+
 	if (chip->soc >= LC709203F_BATTERY_FULL && chip->charge_complete != 1)
-		chip->soc = LC709203F_BATTERY_FULL-1;
+		chip->soc = LC709203F_BATTERY_FULL - 1;
 
 	if (chip->status == POWER_SUPPLY_STATUS_FULL && chip->charge_complete) {
 		chip->soc = LC709203F_BATTERY_FULL;
@@ -190,6 +149,24 @@ static void lc709203f_work(struct work_struct *work)
 		chip->health = POWER_SUPPLY_HEALTH_GOOD;
 		chip->capacity_level = POWER_SUPPLY_CAPACITY_LEVEL_NORMAL;
 	}
+	return 0;
+}
+
+static void lc709203f_work(struct work_struct *work)
+{
+	struct lc709203f_chip *chip;
+	int val;
+	int temperature;
+
+	chip = container_of(work, struct lc709203f_chip, work.work);
+
+	mutex_lock(&chip->mutex);
+	if (chip->shutdown_complete) {
+		mutex_unlock(&chip->mutex);
+		return;
+	}
+
+	lc709203f_update_soc_voltage(chip);
 
 	if (chip->soc != chip->lasttime_soc ||
 		chip->status != chip->lasttime_status) {
@@ -197,6 +174,19 @@ static void lc709203f_work(struct work_struct *work)
 		power_supply_changed(&chip->battery);
 	}
 
+	if (chip->pdata->tz_name) {
+		val = battery_gauge_get_battery_temperature(chip->bg_dev,
+							&temperature);
+		if (val < 0) {
+			dev_err(&chip->client->dev, "temp invalid\n");
+		} else {
+			lc709203f_write_word(chip->client, LC709203F_TEMPERATURE
+						, temperature * 10 + 2732);
+			chip->temperature = temperature;
+		}
+	}
+
+	mutex_unlock(&chip->mutex);
 	schedule_delayed_work(&chip->work, LC709203F_DELAY);
 }
 
@@ -204,11 +194,19 @@ static int lc709203f_get_temperature(struct lc709203f_chip *chip)
 {
 	int val;
 
+	if (chip->shutdown_complete)
+		return chip->temperature;
+
 	val = lc709203f_read_word(chip->client, LC709203F_TEMPERATURE);
 	if (val < 0) {
+		chip->read_failed++;
 		dev_err(&chip->client->dev, "%s: err %d\n", __func__, val);
-		return -EINVAL;
+		if (chip->read_failed > 50)
+			return val;
+		return chip->temperature;
 	}
+	chip->read_failed = 0;;
+	chip->temperature = val;
 	return val;
 }
 
@@ -218,8 +216,10 @@ static enum power_supply_property lc709203f_battery_props[] = {
 	POWER_SUPPLY_PROP_VOLTAGE_NOW,
 	POWER_SUPPLY_PROP_CAPACITY,
 	POWER_SUPPLY_PROP_HEALTH,
+	POWER_SUPPLY_PROP_PRESENT,
 	POWER_SUPPLY_PROP_CAPACITY_LEVEL,
 	POWER_SUPPLY_PROP_TEMP,
+	POWER_SUPPLY_PROP_CURRENT_NOW,
 };
 
 static int lc709203f_get_property(struct power_supply *psy,
@@ -229,6 +229,10 @@ static int lc709203f_get_property(struct power_supply *psy,
 	struct lc709203f_chip *chip = container_of(psy,
 				struct lc709203f_chip, battery);
 	int temperature;
+	int curr_ma;
+	int ret = 0;
+
+	mutex_lock(&chip->mutex);
 
 	switch (psp) {
 	case POWER_SUPPLY_PROP_TECHNOLOGY:
@@ -238,7 +242,7 @@ static int lc709203f_get_property(struct power_supply *psy,
 		val->intval = chip->status;
 		break;
 	case POWER_SUPPLY_PROP_VOLTAGE_NOW:
-		val->intval = chip->vcell;
+		val->intval = 1000 * chip->vcell;
 		break;
 	case POWER_SUPPLY_PROP_CAPACITY:
 		val->intval = chip->soc;
@@ -255,23 +259,46 @@ static int lc709203f_get_property(struct power_supply *psy,
 	case POWER_SUPPLY_PROP_HEALTH:
 		val->intval = chip->health;
 		break;
+	case POWER_SUPPLY_PROP_PRESENT:
+		val->intval = 1;
+		break;
 	case POWER_SUPPLY_PROP_CAPACITY_LEVEL:
 		val->intval = chip->capacity_level;
 		break;
 	case POWER_SUPPLY_PROP_TEMP:
 		temperature = lc709203f_get_temperature(chip);
-		val->intval = (temperature / 10) - 273;
+		/*
+		   Temp ready by device is deci-kelvin
+		   C = K -273.2
+		   Report temp in dec-celcius.
+		*/
+		val->intval = temperature - 2732;
+		break;
+	case POWER_SUPPLY_PROP_CURRENT_NOW:
+		val->intval = 0;
+		ret = battery_gauge_get_battery_current(chip->bg_dev, &curr_ma);
+		if (!ret)
+			val->intval = 1000 * curr_ma;
 		break;
 	default:
-		return -EINVAL;
+		ret = -EINVAL;
+		break;
 	}
-	return 0;
+
+	mutex_unlock(&chip->mutex);
+	return ret;
 }
 
 static int lc709203f_update_battery_status(struct battery_gauge_dev *bg_dev,
 		enum battery_charger_status status)
 {
 	struct lc709203f_chip *chip = battery_gauge_get_drvdata(bg_dev);
+
+	mutex_lock(&chip->mutex);
+	if (chip->shutdown_complete) {
+		mutex_unlock(&chip->mutex);
+		return 0;
+	}
 
 	if (status == BATTERY_CHARGING) {
 		chip->charge_complete = 0;
@@ -280,13 +307,15 @@ static int lc709203f_update_battery_status(struct battery_gauge_dev *bg_dev,
 		chip->charge_complete = 1;
 		chip->soc = LC709203F_BATTERY_FULL;
 		chip->status = POWER_SUPPLY_STATUS_FULL;
-		power_supply_changed(&chip->battery);
-		return 0;
+		goto done;
 	} else {
 		chip->status = POWER_SUPPLY_STATUS_DISCHARGING;
 		chip->charge_complete = 0;
 	}
 	chip->lasttime_status = chip->status;
+
+done:
+	mutex_unlock(&chip->mutex);
 	power_supply_changed(&chip->battery);
 	return 0;
 }
@@ -298,20 +327,136 @@ static struct battery_gauge_ops lc709203f_bg_ops = {
 static struct battery_gauge_info lc709203f_bgi = {
 	.cell_id = 0,
 	.bg_ops = &lc709203f_bg_ops,
+	.current_channel_name = "battery-current",
 };
+
+static irqreturn_t lc709203f_irq(int id, void *dev)
+{
+	struct lc709203f_chip *chip = dev;
+	struct i2c_client *client = chip->client;
+
+	dev_info(&client->dev, "%s(): STATUS_VL\n", __func__);
+	/* Forced set SOC 0 to power off */
+	chip->soc = 0;
+	chip->lasttime_soc = chip->soc;
+	chip->status = chip->lasttime_status;
+	chip->health = POWER_SUPPLY_HEALTH_DEAD;
+	chip->capacity_level = POWER_SUPPLY_CAPACITY_LEVEL_CRITICAL;
+	power_supply_changed(&chip->battery);
+
+	return IRQ_HANDLED;
+}
 
 static void of_lc709203f_parse_platform_data(struct i2c_client *client,
 				struct lc709203f_platform_data *pdata)
 {
 	char const *pstr;
 	struct device_node *np = client->dev.of_node;
+	u32 pval;
+	int ret;
 
-	if (!of_property_read_string(np, "onsemi,tz-name", &pstr))
+	ret = of_property_read_u32(np, "onsemi,initial-rsoc", &pval);
+	if (!ret)
+		pdata->initial_rsoc = pval;
+
+	ret = of_property_read_u32(np, "onsemi,appli-adjustment", &pval);
+	if (!ret)
+		pdata->appli_adjustment = pval;
+
+	pdata->tz_name = NULL;
+	ret = of_property_read_string(np, "onsemi,tz-name", &pstr);
+	if (!ret)
 		pdata->tz_name = pstr;
-	else
-		dev_err(&client->dev, "Failed to read tz-name\n");
 
+	ret = of_property_read_u32(np, "onsemi,thermistor-beta", &pval);
+	if (!ret) {
+		pdata->thermistor_beta = pval;
+	} else {
+		if (!pdata->tz_name)
+			dev_warn(&client->dev,
+				"Thermistor beta not provided\n");
+	}
+
+	ret = of_property_read_u32(np, "onsemi,thermistor-adjustment", &pval);
+	if (!ret)
+		pdata->therm_adjustment = pval;
+
+	ret = of_property_read_u32(np, "onsemi,kernel-threshold-soc", &pval);
+	if (!ret)
+		pdata->threshold_soc = pval;
+
+	ret = of_property_read_u32(np, "onsemi,kernel-maximum-soc", &pval);
+	if (!ret)
+		pdata->maximum_soc = pval;
+	else
+		pdata->maximum_soc = 100;
+
+	ret = of_property_read_u32(np, "onsemi,alert-low-rsoc", &pval);
+	if (!ret)
+		pdata->alert_low_rsoc = pval;
+
+	ret = of_property_read_u32(np, "onsemi,alert-low-voltage", &pval);
+	if (!ret)
+		pdata->alert_low_voltage = pval;
+
+	pdata->support_battery_current = of_property_read_bool(np,
+						"io-channel-names");
 }
+
+#ifdef CONFIG_DEBUG_FS
+
+#include <linux/debugfs.h>
+#include <linux/seq_file.h>
+
+static struct dentry *debugfs_root;
+static u8 valid_command[] = {0x6, 0x7, 0x8, 0x9, 0xA, 0xB, 0xD, 0xF,
+			0x11, 0x12, 0x13, 0x14, 0x15, 0x16, 0x1A};
+static int dbg_lc709203f_show(struct seq_file *s, void *data)
+{
+	struct i2c_client *client = s->private;
+	int ret;
+	int i;
+
+	seq_puts(s, "Register-->Value(16bit)\n");
+	for (i = 0; i < ARRAY_SIZE(valid_command); ++i) {
+		ret = lc709203f_read_word(client, valid_command[i]);
+		if (ret < 0)
+			seq_printf(s, "0x%02x: ERROR\n", valid_command[i]);
+		else
+			seq_printf(s, "0x%02x: 0x%04x\n",
+						valid_command[i], ret);
+	}
+	return 0;
+}
+
+static int dbg_lc709203f_open(struct inode *inode, struct file *file)
+{
+	return single_open(file, dbg_lc709203f_show, inode->i_private);
+}
+
+static const struct file_operations lc709203f_debug_fops = {
+	.open		= dbg_lc709203f_open,
+	.read		= seq_read,
+	.llseek		= seq_lseek,
+	.release	= single_release,
+};
+
+static int lc709203f_debugfs_init(struct i2c_client *client)
+{
+	debugfs_root = debugfs_create_dir("lc709203f", NULL);
+	if (!debugfs_root)
+		pr_warn("lc709203f: Failed to create debugfs directory\n");
+
+	(void) debugfs_create_file("registers", S_IRUGO,
+			debugfs_root, (void *)client, &lc709203f_debug_fops);
+	return 0;
+}
+#else
+static int lc709203f_debugfs_init(struct i2c_client *client)
+{
+	return 0;
+}
+#endif
 
 static int lc709203f_probe(struct i2c_client *client,
 			  const struct i2c_device_id *id)
@@ -319,12 +464,23 @@ static int lc709203f_probe(struct i2c_client *client,
 	struct lc709203f_chip *chip;
 	int ret;
 
+	/* Required PEC functionality */
+	client->flags = client->flags | I2C_CLIENT_PEC;
+
+	/* Check if device exist or not */
+	ret = i2c_smbus_read_word_data(client, LC709203F_NUM_OF_THE_PARAM);
+	if (ret < 0) {
+		dev_err(&client->dev, "device is not responding, %d\n", ret);
+		return ret;
+	}
+
+	dev_info(&client->dev, "Device Params 0x%04x\n", ret);
+
 	chip = devm_kzalloc(&client->dev, sizeof(*chip), GFP_KERNEL);
 	if (!chip)
 		return -ENOMEM;
 
 	chip->client = client;
-
 	if (client->dev.of_node) {
 		chip->pdata = devm_kzalloc(&client->dev,
 					sizeof(*chip->pdata), GFP_KERNEL);
@@ -338,10 +494,76 @@ static int lc709203f_probe(struct i2c_client *client,
 	if (!chip->pdata)
 		return -ENODATA;
 
-	lc709203f_data = chip;
 	mutex_init(&chip->mutex);
 	chip->shutdown_complete = 0;
 	i2c_set_clientdata(client, chip);
+
+	if (chip->pdata->initial_rsoc) {
+		ret = lc709203f_write_word(chip->client,
+			LC709203F_INITIAL_RSOC, chip->pdata->initial_rsoc);
+		if (ret < 0) {
+			dev_err(&client->dev,
+				"INITIAL_RSOC write failed: %d\n", ret);
+			return ret;
+		}
+		dev_info(&client->dev, "initial-rsoc: 0x%04x\n",
+			chip->pdata->initial_rsoc);
+	}
+
+	ret = lc709203f_write_word(chip->client,
+		LC709203F_ALARM_LOW_CELL_RSOC, chip->pdata->alert_low_rsoc);
+	if (ret < 0) {
+		dev_err(&client->dev, "LOW_RSOC write failed: %d\n", ret);
+		return ret;
+	}
+
+	ret = lc709203f_write_word(chip->client,
+		LC709203F_ALARM_LOW_CELL_VOLT, chip->pdata->alert_low_voltage);
+	if (ret < 0) {
+		dev_err(&client->dev, "LOW_VOLT write failed: %d\n", ret);
+		return ret;
+	}
+
+	if (chip->pdata->appli_adjustment) {
+		ret = lc709203f_write_word(chip->client,
+			LC709203F_ADJUSTMENT_PACK_APPLI,
+			chip->pdata->appli_adjustment);
+		if (ret < 0) {
+			dev_err(&client->dev,
+				"ADJUSTMENT_APPLI write failed: %d\n", ret);
+			return ret;
+		}
+	}
+
+	if (chip->pdata->tz_name || !chip->pdata->thermistor_beta)
+		goto skip_thermistor_config;
+
+	if (chip->pdata->therm_adjustment) {
+		ret = lc709203f_write_word(chip->client,
+			LC709203F_ADJUSTMENT_PACK_THERM,
+			chip->pdata->therm_adjustment);
+		if (ret < 0) {
+			dev_err(&client->dev,
+				"ADJUSTMENT_THERM write failed: %d\n", ret);
+			return ret;
+		}
+	}
+
+	ret = lc709203f_write_word(chip->client,
+		LC709203F_THERMISTOR_B, chip->pdata->thermistor_beta);
+	if (ret < 0) {
+		dev_err(&client->dev, "THERMISTOR_B write failed: %d\n", ret);
+		return ret;
+	}
+
+	ret = lc709203f_write_word(chip->client, LC709203F_STATUS_BIT, 0x1);
+	if (ret < 0) {
+		dev_err(&client->dev, "STATUS_BIT write failed: %d\n", ret);
+		return ret;
+	}
+
+skip_thermistor_config:
+	lc709203f_update_soc_voltage(chip);
 
 	chip->battery.name		= "battery";
 	chip->battery.type		= POWER_SUPPLY_TYPE_BATTERY;
@@ -352,20 +574,9 @@ static int lc709203f_probe(struct i2c_client *client,
 	chip->lasttime_status		= POWER_SUPPLY_STATUS_DISCHARGING;
 	chip->charge_complete		= 0;
 
-	chip->regmap = devm_regmap_init_i2c(client, &lc709203f_regmap_config);
-	if (IS_ERR(chip->regmap)) {
-		ret = PTR_ERR(chip->regmap);
-		dev_err(&client->dev, "regmap init failed with err %d\n", ret);
-		goto error;
-	}
-
-	/* Dummy read to check if the slave is present*/
-	ret = lc709203f_read_word(chip->client, LC709203F_VOLTAGE);
-	if (ret < 0) {
-		dev_err(&client->dev, "Exiting driver as xfer failed\n");
-		/* Exit driver if not present */
-		goto error;
-	}
+	/* Remove current property if it is not supported */
+	if (!chip->pdata->support_battery_current)
+		chip->battery.num_properties--;
 
 	ret = power_supply_register(&client->dev, &chip->battery);
 	if (ret) {
@@ -374,7 +585,6 @@ static int lc709203f_probe(struct i2c_client *client,
 	}
 
 	lc709203f_bgi.tz_name = chip->pdata->tz_name;
-
 	chip->bg_dev = battery_gauge_register(&client->dev, &lc709203f_bgi,
 				chip);
 	if (IS_ERR(chip->bg_dev)) {
@@ -387,7 +597,29 @@ static int lc709203f_probe(struct i2c_client *client,
 	INIT_DEFERRABLE_WORK(&chip->work, lc709203f_work);
 	schedule_delayed_work(&chip->work, 0);
 
+	lc709203f_debugfs_init(client);
+
+	if (client->irq) {
+		ret = devm_request_threaded_irq(&client->dev, client->irq,
+			NULL, lc709203f_irq,
+			IRQF_ONESHOT | IRQF_TRIGGER_FALLING,
+			dev_name(&client->dev), chip);
+		if (ret < 0) {
+			dev_err(&client->dev,
+				"%s: request IRQ %d fail, err = %d\n",
+				__func__, client->irq, ret);
+			client->irq = 0;
+			goto irq_reg_error;
+		}
+	}
+	device_set_wakeup_capable(&client->dev, 1);
+
+	dev_info(&client->dev, "Battery Voltage %dmV and SoC %d%%\n",
+			chip->vcell, chip->soc);
+
 	return 0;
+irq_reg_error:
+	cancel_delayed_work_sync(&chip->work);
 bg_err:
 	power_supply_unregister(&chip->battery);
 error:
@@ -412,11 +644,13 @@ static void lc709203f_shutdown(struct i2c_client *client)
 {
 	struct lc709203f_chip *chip = i2c_get_clientdata(client);
 
-	cancel_delayed_work_sync(&chip->work);
 	mutex_lock(&chip->mutex);
 	chip->shutdown_complete = 1;
 	mutex_unlock(&chip->mutex);
 
+	cancel_delayed_work_sync(&chip->work);
+	dev_info(&chip->client->dev, "At shutdown Voltage %dmV and SoC %d%%\n",
+			chip->vcell, chip->soc);
 }
 
 #ifdef CONFIG_PM_SLEEP
@@ -424,26 +658,26 @@ static int lc709203f_suspend(struct device *dev)
 {
 	struct lc709203f_chip *chip = dev_get_drvdata(dev);
 	cancel_delayed_work_sync(&chip->work);
+
+	if (device_may_wakeup(&chip->client->dev))
+		enable_irq_wake(chip->client->irq);
+
 	return 0;
 }
 
 static int lc709203f_resume(struct device *dev)
 {
 	struct lc709203f_chip *chip = dev_get_drvdata(dev);
+
+	if (device_may_wakeup(&chip->client->dev))
+		disable_irq_wake(chip->client->irq);
+
 	schedule_delayed_work(&chip->work, LC709203F_DELAY);
 	return 0;
 }
-#endif /* CONFIG_PM */
+#endif /* CONFIG_PM_SLEEP */
 
 static SIMPLE_DEV_PM_OPS(lc709203f_pm_ops, lc709203f_suspend, lc709203f_resume);
-
-#ifdef CONFIG_OF
-static const struct of_device_id lc709203f_dt_match[] = {
-	{ .compatible = "onsemi,lc709203f" },
-	{ },
-};
-MODULE_DEVICE_TABLE(of, lc709203f_dt_match);
-#endif
 
 static const struct i2c_device_id lc709203f_id[] = {
 	{ "lc709203f", 0 },
@@ -454,7 +688,6 @@ MODULE_DEVICE_TABLE(i2c, lc709203f_id);
 static struct i2c_driver lc709203f_i2c_driver = {
 	.driver	= {
 		.name	= "lc709203f",
-		.of_match_table = of_match_ptr(lc709203f_dt_match),
 		.pm = &lc709203f_pm_ops,
 	},
 	.probe		= lc709203f_probe,
@@ -476,5 +709,5 @@ static void __exit lc709203f_exit(void)
 module_exit(lc709203f_exit);
 
 MODULE_AUTHOR("Chaitanya Bandi <bandik@nvidia.com>");
-MODULE_DESCRIPTION("LC709203F Fuel Gauge");
-MODULE_LICENSE("GPL");
+MODULE_DESCRIPTION("OnSemi LC709203F Fuel Gauge");
+MODULE_LICENSE("GPL v2");

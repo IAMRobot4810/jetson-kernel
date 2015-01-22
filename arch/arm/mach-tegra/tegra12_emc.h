@@ -1,7 +1,7 @@
 /*
  * arch/arm/mach-tegra/tegra12_emc.h
  *
- * Copyright (c) 2013, NVIDIA CORPORATION.  All rights reserved.
+ * Copyright (c) 2013-2014, NVIDIA CORPORATION.  All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -16,14 +16,13 @@
  * You should have received a copy of the GNU General Public License along
  * with this program; if not, write to the Free Software Foundation, Inc.,
  * 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301, USA.
- *
  */
 
 #ifndef _MACH_TEGRA_TEGRA12_EMC_H
 #define _MACH_TEGRA_TEGRA12_EMC_H
 
-#include "tegra_emc.h"
-#include <linux/platform_data/tegra_emc.h>
+#include <mach/tegra_emc.h>
+#include <linux/platform_data/tegra_emc_pdata.h>
 
 int tegra12_emc_init(void);
 
@@ -38,6 +37,8 @@ enum {
 };
 
 void tegra12_mc_holdoff_enable(void);
+
+u32 tegra12_get_dvfs_clk_change_latency_nsec(unsigned long emc_freq_khz);
 
 #define DRAM_BROADCAST(num)			\
 	(((num) > 1) ? DRAM_DEV_SEL_ALL : DRAM_DEV_SEL_0)
@@ -140,6 +141,7 @@ void tegra12_mc_holdoff_enable(void);
 #define EMC_MODE_SET_LONG_CNT			(0x1 << 26)
 #define EMC_EMRS				0xd0
 #define EMC_REF					0xd4
+#define EMC_REF_FORCE_CMD                       1
 #define EMC_PRE					0xd8
 #define EMC_NOP					0xdc
 
@@ -459,10 +461,10 @@ enum {
 #define HYST_AFIR				(0x1 << 14)
 #define HYST_DISPLAY0CB				(0x1 << 6)
 #define HYST_DISPLAY0C				(0x1 << 5)
-#define YST_DISPLAY0BB				(0x1 << 4)
-#define YST_DISPLAY0B				(0x1 << 3)
-#define YST_DISPLAY0AB				(0x1 << 2)
-#define YST_DISPLAY0A				(0x1 << 1)
+#define HYST_DISPLAY0BB				(0x1 << 4)
+#define HYST_DISPLAY0B				(0x1 << 3)
+#define HYST_DISPLAY0AB				(0x1 << 2)
+#define HYST_DISPLAY0A				(0x1 << 1)
 #define HYST_PTCR				(0x1 << 0)
 
 #define HYST_VDEDBGW				(0x1 << 31)
@@ -477,12 +479,12 @@ enum {
 #define HYST_AVPCARM7W				(0x1 << 18)
 #define HYST_AFIW				(0x1 << 17)
 #define HYST_MSENCSWR				(0x1 << 11)
-#define YST_MPCORER				(0x1 << 7)
-#define YST_MPCORELPR				(0x1 << 6)
-#define YST_VDETPER				(0x1 << 5)
-#define YST_VDEMCER				(0x1 << 4)
-#define YST_VDEMBER				(0x1 << 3)
-#define YST_VDEBSEVR				(0x1 << 2)
+#define HYST_MPCORER				(0x1 << 7)
+#define HYST_MPCORELPR				(0x1 << 6)
+#define HYST_VDETPER				(0x1 << 5)
+#define HYST_VDEMCER				(0x1 << 4)
+#define HYST_VDEMBER				(0x1 << 3)
+#define HYST_VDEBSEVR				(0x1 << 2)
 
 #define HYST_DISPLAYT				(0x1 << 26)
 #define HYST_GPUSWR				(0x1 << 25)
@@ -498,24 +500,24 @@ enum {
 #define HYST_XUSB_DEVR				(0x1 << 12)
 #define HYST_XUSB_HOSTW				(0x1 << 11)
 #define HYST_XUSB_HOSTR				(0x1 << 10)
-#define YST_ISPWB				(0x1 << 7)
-#define YST_ISPWA				(0x1 << 6)
-#define YST_ISPRA				(0x1 << 4)
-#define YST_VDETPMW				(0x1 << 1)
-#define YST_VDEMBEW				(0x1 << 0)
+#define HYST_ISPWB				(0x1 << 7)
+#define HYST_ISPWA				(0x1 << 6)
+#define HYST_ISPRA				(0x1 << 4)
+#define HYST_VDETPMW				(0x1 << 1)
+#define HYST_VDEMBEW				(0x1 << 0)
 
 #define HYST_DISPLAYD				(0x1 << 19)
 #define HYST_VIW				(0x1 << 18)
 #define HYST_VICSWR				(0x1 << 13)
 #define HYST_VICSRD				(0x1 << 12)
-#define YST_SDMMCWAB				(0x1 << 7)
-#define YST_SDMMCW				(0x1 << 6)
-#define YST_SDMMCWAA				(0x1 << 5)
-#define YST_SDMMCWA				(0x1 << 4)
-#define YST_SDMMCRAB				(0x1 << 3)
-#define YST_SDMMCR				(0x1 << 2)
-#define YST_SDMMCRAA				(0x1 << 1)
-#define YST_SDMMCRA				(0x1 << 0)
+#define HYST_SDMMCWAB				(0x1 << 7)
+#define HYST_SDMMCW				(0x1 << 6)
+#define HYST_SDMMCWAA				(0x1 << 5)
+#define HYST_SDMMCWA				(0x1 << 4)
+#define HYST_SDMMCRAB				(0x1 << 3)
+#define HYST_SDMMCR				(0x1 << 2)
+#define HYST_SDMMCRAA				(0x1 << 1)
+#define HYST_SDMMCRA				(0x1 << 0)
 
 #define MC_DIS_EXTRA_SNAP_LEVELS		0x2ac
 

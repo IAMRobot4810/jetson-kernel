@@ -5,7 +5,7 @@
  * Author:
  *	Colin Cross <ccross@google.com>
  *
- * Copyright (C) 2010-2013 NVIDIA CORPORATION. All rights reserved.
+ * Copyright (C) 2010-2014 NVIDIA CORPORATION. All rights reserved.
  *
  * This software is licensed under the terms of the GNU General Public
  * License version 2, as published by the Free Software Foundation, and
@@ -39,6 +39,7 @@
 #include "board.h"
 #include "clock.h"
 #include "dvfs.h"
+#include "tegra_cl_dvfs.h"
 
 #define DVFS_RAIL_STATS_BIN	12500
 
@@ -73,6 +74,9 @@ void tegra_dvfs_add_relationships(struct dvfs_relationship *rels, int n)
 		rel = &rels[i];
 		list_add_tail(&rel->from_node, &rel->to->relationships_from);
 		list_add_tail(&rel->to_node, &rel->from->relationships_to);
+
+		/* Overriding dependent rail below nominal may not be safe */
+		rel->to->min_override_millivolts = rel->to->nominal_millivolts;
 	}
 
 	mutex_unlock(&dvfs_lock);
@@ -107,6 +111,13 @@ static void dvfs_validate_cdevs(struct dvfs_rail *rail)
 	if (rail->vts_cdev && (rail != tegra_gpu_rail)) {
 		rail->vts_cdev = NULL;
 		WARN(1, "%s: thermal dvfs is not supported\n", rail->reg_id);
+	}
+
+	/* Thermal clock switch is only supported for CPU */
+	if (rail->clk_switch_cdev && (rail != tegra_cpu_rail)) {
+		rail->clk_switch_cdev = NULL;
+		 WARN(1, "%s: thermal clock switch is not supported\n",
+				rail->reg_id);
 	}
 
 	if (!rail->simon_vmin_offsets != !rail->simon_vmin_offs_num) {
@@ -260,6 +271,9 @@ static int dvfs_rail_set_voltage_reg(struct dvfs_rail *rail, int millivolts)
 		rail->reg_max_millivolts * 1000);
 	rail->updating = false;
 
+	pr_debug("%s: request_mV [%d, %d] from %s regulator (%d)\n", __func__,
+		 millivolts, rail->reg_max_millivolts, rail->reg_id, ret);
+
 	return ret;
 }
 
@@ -289,28 +303,21 @@ static int dvfs_rail_set_voltage(struct dvfs_rail *rail, int millivolts)
 		offset = -step;
 	}
 
-	/*
-	 * DFLL adjusts rail voltage automatically, but not exactly to the
-	 * expected level - update stats, anyway.
-	 */
-	if (rail->dfll_mode) {
-		rail->millivolts = rail->new_millivolts = millivolts;
-		dvfs_rail_stats_update(rail, millivolts, ktime_get());
-		return 0;
-	}
-
-	if (rail->disabled)
+	/* Voltage change is always happening in DFLL mode */
+	if (rail->disabled && !rail->dfll_mode)
 		return 0;
 
 	rail->resolving_to = true;
 	jmp_to_zero = rail->jmp_to_zero &&
 			((millivolts == 0) || (rail->millivolts == 0));
-	steps = jmp_to_zero ? 1 :
-		DIV_ROUND_UP(abs(millivolts - rail->millivolts), step);
+
+	if (jmp_to_zero || rail->dfll_mode)
+		steps = 1;
+	else
+		steps = DIV_ROUND_UP(abs(millivolts - rail->millivolts), step);
 
 	for (i = 0; i < steps; i++) {
-		if (!jmp_to_zero &&
-		    (abs(millivolts - rail->millivolts) > step))
+		if (steps > (i + 1))
 			rail->new_millivolts = rail->millivolts + offset;
 		else
 			rail->new_millivolts = millivolts;
@@ -327,10 +334,18 @@ static int dvfs_rail_set_voltage(struct dvfs_rail *rail, int millivolts)
 				goto out;
 		}
 
-		ret = dvfs_rail_set_voltage_reg(rail, rail->new_millivolts);
-		if (ret) {
-			pr_err("Failed to set dvfs regulator %s\n", rail->reg_id);
-			goto out;
+		/*
+		 * DFLL adjusts voltage automatically - don't touch regulator,
+		 * but update stats, anyway.
+		 */
+		if (!rail->dfll_mode) {
+			ret = dvfs_rail_set_voltage_reg(rail,
+							rail->new_millivolts);
+			if (ret) {
+				pr_err("Failed to set dvfs regulator %s\n",
+				       rail->reg_id);
+				goto out;
+			}
 		}
 
 		rail->millivolts = rail->new_millivolts;
@@ -365,12 +380,7 @@ out:
 static inline int dvfs_rail_apply_limits(struct dvfs_rail *rail, int millivolts)
 {
 	int min_mv = rail->min_millivolts;
-
-	if (rail->therm_mv_floors) {
-		int i = rail->therm_floor_idx;
-		if (i < rail->therm_mv_floors_num)
-			min_mv = rail->therm_mv_floors[i];
-	}
+	min_mv = max(min_mv, tegra_dvfs_rail_get_thermal_floor(rail));
 
 	if (rail->override_millivolts) {
 		millivolts = rail->override_millivolts;
@@ -533,6 +543,8 @@ static int dvfs_rail_connect_to_regulator(struct dvfs_rail *rail)
 				       rail->reg_id);
 				return PTR_ERR(reg);
 			}
+			pr_info("tegra_dvfs: %s rail is fixed in pll mode\n",
+			       rail->reg_id);
 		}
 		rail->reg = reg;
 	}
@@ -560,6 +572,8 @@ static int dvfs_rail_connect_to_regulator(struct dvfs_rail *rail)
 		     rail->reg_id, rail->millivolts, rail->boot_millivolts);
 		rail->boot_millivolts = rail->millivolts;
 	}
+
+	pr_info("tegra_dvfs: %s connected to regulator\n", rail->reg_id);
 	return 0;
 }
 
@@ -600,7 +614,17 @@ __tegra_dvfs_set_rate(struct dvfs *d, unsigned long rate)
 
 	if (rate == 0) {
 		d->cur_millivolts = 0;
-	} else {
+		/*
+		 * For single clock GPU rail keep DVFS rate unchanged when clock
+		 * is disabled. Rail is turned off explicitly, in any case, but
+		 * with non-zero rate voltage level at regulator is updated when
+		 * temperature is changes while rail is off.
+		 */
+		if (d->dvfs_rail == tegra_gpu_rail)
+			rate = d->cur_rate;
+	}
+
+	if (rate != 0) {
 		while (i < d->num_freqs && rate > freqs[i])
 			i++;
 
@@ -850,6 +874,8 @@ int tegra_dvfs_predict_peak_millivolts(struct clk *c, unsigned long rate)
 
 	if (c->dvfs->dvfs_rail->therm_mv_floors)
 		mv = max(mv, c->dvfs->dvfs_rail->therm_mv_floors[0]);
+	if (c->dvfs->dvfs_rail->therm_mv_dfll_floors)
+		mv = max(mv, c->dvfs->dvfs_rail->therm_mv_dfll_floors[0]);
 	return mv;
 }
 
@@ -865,13 +891,24 @@ const int *tegra_dvfs_get_millivolts_pll(struct dvfs *d)
 int tegra_dvfs_set_rate(struct clk *c, unsigned long rate)
 {
 	int ret;
+	bool suspended;
 
 	if (!c->dvfs)
 		return -EINVAL;
 
-	mutex_lock(&dvfs_lock);
+	suspended = timekeeping_suspended && c->dvfs->dvfs_rail->suspended;
+	if (suspended) {
+		if (mutex_is_locked(&dvfs_lock))
+			WARN(1, "%s: Entered suspend with DVFS mutex locked\n",
+			     __func__);
+	} else {
+		mutex_lock(&dvfs_lock);
+	}
+
 	ret = __tegra_dvfs_set_rate(c->dvfs, rate);
-	mutex_unlock(&dvfs_lock);
+
+	if (!suspended)
+		mutex_unlock(&dvfs_lock);
 
 	return ret;
 }
@@ -1162,6 +1199,20 @@ static bool tegra_dvfs_all_rails_suspended(void)
 	return all_suspended;
 }
 
+static bool is_solved_at_suspend(struct dvfs_rail *to,
+				 struct dvfs_relationship *rel)
+{
+	if (rel->solved_at_suspend)
+		return true;
+
+	if (rel->solved_at_nominal) {
+		int mv = tegra_dvfs_rail_get_suspend_level(to);
+		if (mv == to->nominal_millivolts)
+			return true;
+	}
+	return false;
+}
+
 static bool tegra_dvfs_from_rails_suspended_or_solved(struct dvfs_rail *to)
 {
 	struct dvfs_relationship *rel;
@@ -1169,7 +1220,7 @@ static bool tegra_dvfs_from_rails_suspended_or_solved(struct dvfs_rail *to)
 
 	list_for_each_entry(rel, &to->relationships_from, from_node)
 		if (!rel->from->suspended && !rel->from->disabled &&
-			!rel->solved_at_nominal)
+			!is_solved_at_suspend(to, rel))
 			all_suspended = false;
 
 	return all_suspended;
@@ -1183,8 +1234,11 @@ static int tegra_dvfs_suspend_one(void)
 	list_for_each_entry(rail, &dvfs_rail_list, node) {
 		if (!rail->suspended && !rail->disabled &&
 		    tegra_dvfs_from_rails_suspended_or_solved(rail)) {
-			/* Safe, as pll mode rate is capped to fixed level */
-			if (!rail->dfll_mode && rail->fixed_millivolts) {
+			if (rail->dfll_mode) {
+				/* s/w doesn't change voltage in dfll mode */
+				mv = rail->millivolts;
+			} else if (rail->fixed_millivolts) {
+				/* Safe: pll mode rate capped to fixed level */
 				mv = rail->fixed_millivolts;
 			} else {
 				mv = tegra_dvfs_rail_get_suspend_level(rail);
@@ -1452,20 +1506,53 @@ bool tegra_dvfs_is_rail_up(struct dvfs_rail *rail)
 int tegra_dvfs_rail_set_mode(struct dvfs_rail *rail, unsigned int mode)
 {
 	int ret = -ENOENT;
+	unsigned int cur_mode;
 
-	if (!rail)
+	if (!rail || !rail->reg)
 		return ret;
 
-	pr_debug("%s: updating %s mode from %u to %u\n", __func__,
-		rail->reg_id, regulator_get_mode(rail->reg), mode);
-
-	if (rail->reg)
+	if (regulator_can_set_mode(rail->reg)) {
+		pr_debug("%s: updating %s mode to %u\n", __func__,
+			 rail->reg_id, mode);
 		ret = regulator_set_mode(rail->reg, mode);
+		if (ret)
+			pr_err("%s: failed to set dvfs regulator %s mode %u\n",
+				__func__, rail->reg_id, mode);
+		return ret;
+	}
 
-	if (ret)
-		pr_err("Failed to set dvfs regulator %s mode %u\n",
-			rail->reg_id, mode);
-	return ret;
+	/*
+	 * Set mode is not supported - check request against current mode
+	 * (if the latter is unknown, assume NORMAL).
+	 */
+	cur_mode = regulator_get_mode(rail->reg);
+	if (IS_ERR_VALUE(cur_mode))
+		cur_mode = REGULATOR_MODE_NORMAL;
+
+	if (WARN_ONCE(cur_mode != mode,
+		  "%s: dvfs regulator %s cannot change mode from %u\n",
+		  __func__, rail->reg_id, cur_mode))
+		return -EINVAL;
+
+	return 0;
+}
+
+int tegra_dvfs_rail_register_notifier(struct dvfs_rail *rail,
+				      struct notifier_block *nb)
+{
+	if (!rail || !rail->reg)
+		return -ENOENT;
+
+	return regulator_register_notifier(rail->reg, nb);
+}
+
+int tegra_dvfs_rail_unregister_notifier(struct dvfs_rail *rail,
+					struct notifier_block *nb)
+{
+	if (!rail || !rail->reg)
+		return -ENOENT;
+
+	return regulator_unregister_notifier(rail->reg, nb);
 }
 
 bool tegra_dvfs_rail_updating(struct clk *clk)
@@ -1502,6 +1589,14 @@ int tegra_dvfs_dfll_mode_set(struct dvfs *d, unsigned long rate)
 	if (!d->dvfs_rail->dfll_mode) {
 		d->dvfs_rail->dfll_mode = true;
 		__tegra_dvfs_set_rate(d, rate);
+
+		/*
+		 * Report error, but continue: DFLL is functional, anyway, and
+		 * no error with proper regulator driver update
+		 */
+		if (regulator_set_vsel_volatile(d->dvfs_rail->reg, true))
+			WARN_ONCE(1, "%s: failed to set vsel volatile\n",
+				  __func__);
 	}
 	mutex_unlock(&dvfs_lock);
 	return 0;
@@ -1514,6 +1609,8 @@ int tegra_dvfs_dfll_mode_clear(struct dvfs *d, unsigned long rate)
 	mutex_lock(&dvfs_lock);
 	if (d->dvfs_rail->dfll_mode) {
 		d->dvfs_rail->dfll_mode = false;
+		regulator_set_vsel_volatile(d->dvfs_rail->reg, false);
+
 		/* avoid false detection of matching target (voltage in dfll
 		   mode is fluctuating, and recorded level is just estimate) */
 		d->dvfs_rail->millivolts--;
@@ -1566,6 +1663,13 @@ struct tegra_cooling_device *tegra_dvfs_get_gpu_vts_cdev(void)
 {
 	if (tegra_gpu_rail)
 		return tegra_gpu_rail->vts_cdev;
+	return NULL;
+}
+
+struct tegra_cooling_device *tegra_dvfs_get_cpu_clk_switch_cdev(void)
+{
+	if (tegra_cpu_rail)
+		return tegra_cpu_rail->clk_switch_cdev;
 	return NULL;
 }
 
@@ -1693,6 +1797,72 @@ void tegra_dvfs_rail_register_vmax_cdev(struct dvfs_rail *rail)
 	}
 }
 
+/* Cooling device to switch the cpu clock source between PLLX and DFLL */
+static int tegra_dvfs_rail_get_clk_switch_cdev_max_state(
+	struct thermal_cooling_device *cdev, unsigned long *max_state)
+{
+	struct dvfs_rail *rail = (struct dvfs_rail *)cdev->devdata;
+	*max_state = rail->clk_switch_cdev->trip_temperatures_num;
+	return 0;
+}
+
+static int tegra_dvfs_rail_get_clk_switch_cdev_cur_state(
+	struct thermal_cooling_device *cdev, unsigned long *cur_state)
+{
+	struct dvfs_rail *rail = (struct dvfs_rail *)cdev->devdata;
+	*cur_state = rail->therm_scale_idx;
+	return 0;
+}
+
+static int tegra_dvfs_rail_set_clk_switch_cdev_state(
+	struct thermal_cooling_device *cdev, unsigned long cur_state)
+{
+	int ret = 0;
+	enum dfll_range use_dfll;
+	struct dvfs_rail *rail = (struct dvfs_rail *)cdev->devdata;
+
+	if (CONFIG_TEGRA_USE_DFLL_RANGE == TEGRA_USE_DFLL_CDEV_CNTRL) {
+		if (rail->therm_scale_idx != cur_state) {
+			rail->therm_scale_idx = cur_state;
+			if (rail->therm_scale_idx == 0)
+				use_dfll = DFLL_RANGE_NONE;
+			else
+				use_dfll = DFLL_RANGE_ALL_RATES;
+
+			ret = tegra_clk_dfll_range_control(use_dfll);
+		}
+	} else {
+		pr_warn("\n%s: Not Allowed:", __func__);
+		pr_warn("DFLL is not under thermal cooling device control\n");
+		return -EACCES;
+	}
+	return ret;
+}
+
+static struct thermal_cooling_device_ops tegra_dvfs_clk_cooling_ops = {
+	.get_max_state = tegra_dvfs_rail_get_clk_switch_cdev_max_state,
+	.get_cur_state = tegra_dvfs_rail_get_clk_switch_cdev_cur_state,
+	.set_cur_state = tegra_dvfs_rail_set_clk_switch_cdev_state,
+};
+
+static void tegra_dvfs_rail_register_clk_switch_cdev(struct dvfs_rail *rail)
+{
+	struct thermal_cooling_device *dev;
+
+	if (!rail->clk_switch_cdev)
+		return;
+
+	dev = thermal_cooling_device_register(rail->clk_switch_cdev->cdev_type,
+		(void *)rail, &tegra_dvfs_clk_cooling_ops);
+	/* report error & set max limits across thermal ranges as safe dvfs */
+	if (IS_ERR_OR_NULL(dev) || list_empty(&dev->thermal_instances)) {
+		pr_err("tegra cooling device %s failed to register\n",
+		       rail->clk_switch_cdev->cdev_type);
+		make_safe_thermal_dvfs(rail);
+	}
+}
+
+
 /* Cooling device to scale voltage with temperature in pll mode */
 static int tegra_dvfs_rail_get_vts_cdev_max_state(
 	struct thermal_cooling_device *cdev, unsigned long *max_state)
@@ -1761,6 +1931,7 @@ static inline void tegra_dvfs_rail_register_vts_cdev(struct dvfs_rail *rail)
 }
 #endif
 
+#ifdef CONFIG_TEGRA_USE_SIMON
 /*
  * Validate rail SiMon Vmin offsets. Valid offsets should be negative,
  * descending, starting from zero.
@@ -1785,6 +1956,7 @@ void __init tegra_dvfs_rail_init_simon_vmin_offsets(
 	rail->simon_vmin_offsets = offsets;
 	rail->simon_vmin_offs_num = offs_num;
 }
+#endif
 
 /*
  * Validate rail thermal profile, and get its size. Valid profile:
@@ -1841,6 +2013,33 @@ void __init tegra_dvfs_rail_init_vmax_thermal_profile(
 		rail->vmax_cdev->trip_temperatures_num = i;
 		rail->vmax_cdev->trip_temperatures = therm_trips_table;
 	}
+}
+
+int  __init tegra_dvfs_rail_init_clk_switch_thermal_profile(
+	int *clk_switch_trips, struct dvfs_rail *rail)
+{
+	int i;
+
+	if (!rail->clk_switch_cdev) {
+		WARN(1, "%s: missing thermal dvfs cooling device\n",
+			rail->reg_id);
+		return -ENOENT;
+	}
+
+	for (i = 0; i < MAX_THERMAL_LIMITS - 1; i++) {
+		if (clk_switch_trips[i] >= clk_switch_trips[i+1])
+			break;
+	}
+
+	/*Only one trip point is allowed for this cdev*/
+	if (i != 0) {
+		WARN(1, "%s: Only one trip point allowed\n", __func__);
+		return -EINVAL;
+	}
+
+	rail->clk_switch_cdev->trip_temperatures_num = i + 1;
+	rail->clk_switch_cdev->trip_temperatures = clk_switch_trips;
+	return 0;
 }
 
 void __init tegra_dvfs_rail_init_vmin_thermal_profile(
@@ -1925,7 +2124,8 @@ int __init tegra_dvfs_init_thermal_dvfs_voltages(int *therm_voltages,
 }
 
 /* Directly set cold temperature limit in dfll mode */
-int tegra_dvfs_rail_dfll_mode_set_cold(struct dvfs_rail *rail)
+int tegra_dvfs_rail_dfll_mode_set_cold(struct dvfs_rail *rail,
+				       struct clk *dfll_clk)
 {
 	int ret = 0;
 
@@ -1934,14 +2134,15 @@ int tegra_dvfs_rail_dfll_mode_set_cold(struct dvfs_rail *rail)
 		return ret;
 
 	/*
-	 * Since cooling thresholds are the same in pll and dfll modes, pll mode
-	 * thermal index can be used to decide if cold limit should be set in
-	 * dfll mode.
+	 * Compare last set Vmin with requirement based on current temperature,
+	 * and set cold limit at regulator only Vmin is below requirement.
 	 */
 	mutex_lock(&dvfs_lock);
-	if (rail->dfll_mode &&
-	    (rail->therm_floor_idx < rail->therm_mv_floors_num)) {
-			int mv = rail->therm_mv_floors[rail->therm_floor_idx];
+	if (rail->dfll_mode) {
+		int mv, cmp;
+		cmp = tegra_cl_dvfs_vmin_cmp_needed(
+			tegra_dfll_get_cl_dvfs_data(dfll_clk), &mv);
+		if (cmp < 0)
 			ret = dvfs_rail_set_voltage_reg(rail, mv);
 	}
 	mutex_unlock(&dvfs_lock);
@@ -1949,10 +2150,30 @@ int tegra_dvfs_rail_dfll_mode_set_cold(struct dvfs_rail *rail)
 	return ret;
 }
 
+/* Get current thermal floor */
+int tegra_dvfs_rail_get_thermal_floor(struct dvfs_rail *rail)
+{
+	if (rail && rail->therm_mv_floors &&
+	    (rail->therm_floor_idx < rail->therm_mv_floors_num)) {
+		int i = rail->therm_floor_idx;
+		if (rail->dfll_mode) {
+			BUG_ON(!rail->therm_mv_dfll_floors);
+			return rail->therm_mv_dfll_floors[i];
+		}
+		return rail->therm_mv_floors[i];
+	}
+	return 0;
+}
+
 /*
  * Iterate through all the dvfs regulators, finding the regulator exported
  * by the regulator api for each one.  Must be called in late init, after
  * all the regulator api's regulators are initialized.
+ */
+
+#ifdef CONFIG_TEGRA_DVFS_RAIL_CONNECT_ALL
+/*
+ * Enable voltage scaling only if all the rails connect successfully
  */
 int __init tegra_dvfs_rail_connect_regulators(void)
 {
@@ -1985,6 +2206,29 @@ int __init tegra_dvfs_rail_connect_regulators(void)
 
 	return 0;
 }
+#else
+int __init tegra_dvfs_rail_connect_regulators(void)
+{
+	struct dvfs_rail *rail;
+
+	mutex_lock(&dvfs_lock);
+
+	list_for_each_entry(rail, &dvfs_rail_list, node) {
+		if (!dvfs_rail_connect_to_regulator(rail)) {
+			dvfs_rail_update(rail);
+			if (!rail->disabled)
+				continue;
+			/* Don't rely on boot level - force disabled voltage */
+			rail->disabled = false;
+		}
+		__tegra_dvfs_rail_disable(rail);
+	}
+
+	mutex_unlock(&dvfs_lock);
+
+	return 0;
+}
+#endif
 
 int __init tegra_dvfs_rail_register_notifiers(void)
 {
@@ -1997,6 +2241,8 @@ int __init tegra_dvfs_rail_register_notifiers(void)
 	list_for_each_entry(rail, &dvfs_rail_list, node) {
 			tegra_dvfs_rail_register_vmin_cdev(rail);
 			tegra_dvfs_rail_register_vts_cdev(rail);
+			tegra_dvfs_rail_register_clk_switch_cdev(rail);
+
 	}
 
 	return 0;
@@ -2060,6 +2306,10 @@ static int dvfs_tree_sort_cmp(void *p, struct list_head *a, struct list_head *b)
 	return strcmp(da->clk_name, db->clk_name);
 }
 
+/* To emulate and show rail relations with 0 mV on dependent rail-to */
+static struct dvfs_rail show_to;
+static struct dvfs_relationship show_rel;
+
 static int dvfs_tree_show(struct seq_file *s, void *data)
 {
 	struct dvfs *d;
@@ -2079,19 +2329,20 @@ static int dvfs_tree_show(struct seq_file *s, void *data)
 			   rail->dfll_mode ? " dfll mode" :
 				rail->disabled ? " disabled" : "");
 		list_for_each_entry(rel, &rail->relationships_from, from_node) {
-			seq_printf(s, "   %-10s %-7d mV %-4d mV\n",
+			show_rel = *rel;
+			show_rel.to = &show_to;
+			show_to = *rel->to;
+			show_to.millivolts = show_to.new_millivolts = 0;
+			seq_printf(s, "   %-10s %-7d mV %-4d mV .. %-4d mV\n",
 				rel->from->reg_id, rel->from->millivolts,
+				dvfs_solve_relationship(&show_rel),
 				dvfs_solve_relationship(rel));
 		}
 		seq_printf(s, "   nominal    %-7d mV\n",
 			   rail->nominal_millivolts);
 		seq_printf(s, "   offset     %-7d mV\n", rail->dbg_mv_offs);
 
-		if (rail->therm_mv_floors) {
-			int i = rail->therm_floor_idx;
-			if (i < rail->therm_mv_floors_num)
-				thermal_mv_floor = rail->therm_mv_floors[i];
-		}
+		thermal_mv_floor = tegra_dvfs_rail_get_thermal_floor(rail);
 		seq_printf(s, "   thermal    %-7d mV\n", thermal_mv_floor);
 
 		if (rail == tegra_core_rail) {
@@ -2229,6 +2480,18 @@ static int core_override_set(void *data, u64 val)
 DEFINE_SIMPLE_ATTRIBUTE(core_override_fops,
 			core_override_get, core_override_set, "%llu\n");
 
+static int rail_mv_get(void *data, u64 *val)
+{
+	struct dvfs_rail *rail = data;
+	if (rail) {
+		*val = rail->stats.off ? 0 : rail->millivolts;
+		return 0;
+	}
+	*val = 0;
+	return -ENOENT;
+}
+DEFINE_SIMPLE_ATTRIBUTE(rail_mv_fops, rail_mv_get, NULL, "%llu\n");
+
 static int gpu_dvfs_t_show(struct seq_file *s, void *data)
 {
 	int i, j;
@@ -2312,6 +2575,13 @@ static int dvfs_table_show(struct seq_file *s, void *data)
 	seq_printf(s, "DVFS tables: units mV/MHz\n");
 
 	mutex_lock(&dvfs_lock);
+
+	list_for_each_entry(rail, &dvfs_rail_list, node) {
+		if (rail->version) {
+			seq_printf(s, "%-9s table version: ", rail->reg_id);
+			seq_printf(s, "%-16s\n", rail->version);
+		}
+	}
 
 	list_for_each_entry(rail, &dvfs_rail_list, node) {
 		list_for_each_entry(d, &rail->dvfs, reg_node) {
@@ -2401,6 +2671,21 @@ int __init dvfs_debugfs_init(struct dentry *clk_debugfs_root)
 
 	d = debugfs_create_file("vdd_core_override", S_IRUGO | S_IWUSR,
 		clk_debugfs_root, NULL, &core_override_fops);
+	if (!d)
+		return -ENOMEM;
+
+	d = debugfs_create_file("vdd_cpu_mv", S_IRUGO, clk_debugfs_root,
+				tegra_cpu_rail, &rail_mv_fops);
+	if (!d)
+		return -ENOMEM;
+
+	d = debugfs_create_file("vdd_gpu_mv", S_IRUGO, clk_debugfs_root,
+				tegra_gpu_rail, &rail_mv_fops);
+	if (!d)
+		return -ENOMEM;
+
+	d = debugfs_create_file("vdd_core_mv", S_IRUGO, clk_debugfs_root,
+				tegra_core_rail, &rail_mv_fops);
 	if (!d)
 		return -ENOMEM;
 

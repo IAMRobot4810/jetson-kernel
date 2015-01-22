@@ -1,7 +1,7 @@
 /*
  * arch/arm/mach-tegra/tegra_emc.c
  *
- * Copyright (c) 2013, NVIDIA CORPORATION.  All rights reserved.
+ * Copyright (c) 2013-2014, NVIDIA CORPORATION.  All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 2 as
@@ -15,7 +15,6 @@
  * You should have received a copy of the GNU General Public License along
  * with this program; if not, write to the Free Software Foundation, Inc.,
  * 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301, USA.
- *
  */
 
 #include <linux/kernel.h>
@@ -25,8 +24,11 @@
 #include <linux/delay.h>
 #include <linux/debugfs.h>
 #include <linux/seq_file.h>
+#include <linux/tegra-soc.h>
 
-#include "tegra_emc.h"
+#include <mach/tegra_emc.h>
+
+#include "tegra12_emc.h"
 
 u8 tegra_emc_iso_share = 100;
 static unsigned long emc_iso_allocation;
@@ -34,6 +36,17 @@ static unsigned long last_iso_bw;
 
 static struct emc_iso_usage emc_usage_table[TEGRA_EMC_ISO_USE_CASES_MAX_NUM];
 
+
+u32 tegra_get_dvfs_clk_change_latency_nsec(unsigned long emc_freq_khz)
+{
+	switch (tegra_get_chipid()) {
+	case TEGRA_CHIPID_TEGRA12:
+	case TEGRA_CHIPID_TEGRA13:
+		return tegra12_get_dvfs_clk_change_latency_nsec(emc_freq_khz);
+	default:
+		return 0;
+	}
+}
 
 void __init tegra_emc_iso_usage_table_init(struct emc_iso_usage *table,
 					   int size)

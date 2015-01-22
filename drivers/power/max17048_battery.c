@@ -2,7 +2,7 @@
  *  max17048_battery.c
  *  fuel-gauge systems for lithium-ion (Li+) batteries
  *
- * Copyright (c) 2012-2013, NVIDIA CORPORATION.  All rights reserved.
+ * Copyright (c) 2012-2014, NVIDIA CORPORATION.  All rights reserved.
  *  Chandler Zhang <chazhang@nvidia.com>
  *  Syed Rafiuddin <srafiuddin@nvidia.com>
  *
@@ -45,7 +45,7 @@
 #define MAX17048_DELAY		(30*HZ)
 #define MAX17048_BATTERY_FULL	100
 #define MAX17048_BATTERY_LOW	15
-#define MAX17048_VERSION_NO	0x11
+#define MAX17048_VERSION_NO	0x1100
 
 /* MAX17048 ALERT interrupts */
 #define MAX17048_STATUS_RI		0x0100 /* reset */
@@ -250,6 +250,9 @@ static void max17048_get_soc(struct i2c_client *client)
 		else
 			chip->soc = (uint16_t)soc >> 9;
 	}
+
+	chip->soc = battery_gauge_get_scaled_soc(chip->bg_dev,
+			chip->soc * 100, chip->pdata->threshold_soc);
 
 	if (chip->soc >= MAX17048_BATTERY_FULL && chip->charge_complete != 1)
 		chip->soc = MAX17048_BATTERY_FULL-1;
@@ -490,20 +493,19 @@ static int max17048_initialize(struct max17048_chip *chip)
 	return 0;
 }
 
-int max17048_check_battery()
+static int max17048_check_battery(struct max17048_chip *chip)
 {
 	uint16_t version;
+	struct i2c_client *client = chip->client;
 
-	if (!max17048_data)
-		return -ENODEV;
-
-	version = max17048_get_version(max17048_data->client);
+	version = max17048_get_version(client);
 	if (version != MAX17048_VERSION_NO)
 		return -ENODEV;
 
+	dev_info(&client->dev, "MAX17048 Fuel-Gauge Ver 0x%x\n", version);
+
 	return 0;
 }
-EXPORT_SYMBOL_GPL(max17048_check_battery);
 
 static irqreturn_t max17048_irq(int id, void *dev)
 {
@@ -594,6 +596,10 @@ static struct max17048_platform_data *max17048_parse_dt(struct device *dev)
 
 	pdata->model_data = model_data;
 	of_property_read_string(np, "tz-name", &pdata->tz_name);
+
+	ret = of_property_read_u32(np, "maxim,kernel-threshold-soc", &val);
+	if (!ret)
+		pdata->threshold_soc = val;
 
 	ret = of_property_read_u32(np, "bits", &val);
 	if (ret < 0)
@@ -727,9 +733,7 @@ static int max17048_probe(struct i2c_client *client,
 {
 	struct max17048_chip *chip;
 	int ret;
-	uint16_t version;
 	u16 val;
-
 	chip = devm_kzalloc(&client->dev, sizeof(*chip), GFP_KERNEL);
 	if (!chip)
 		return -ENOMEM;
@@ -751,12 +755,11 @@ static int max17048_probe(struct i2c_client *client,
 	chip->shutdown_complete = 0;
 	i2c_set_clientdata(client, chip);
 
-	version = max17048_check_battery();
-	if (version < 0) {
+	ret = max17048_check_battery(chip);
+	if (ret < 0) {
 		ret = -ENODEV;
 		goto error;
 	}
-	dev_info(&client->dev, "MAX17048 Fuel-Gauge Ver 0x%x\n", version);
 
 	ret = max17048_initialize(chip);
 	if (ret < 0) {
@@ -792,7 +795,8 @@ static int max17048_probe(struct i2c_client *client,
 	schedule_delayed_work(&chip->work, 0);
 
 	battery_gauge_record_snapshot_values(chip->bg_dev,
-					jiffies_to_msecs(MAX17048_DELAY/2));
+					jiffies_to_msecs
+					(BATTERY_SNAPSHOT_INTERVAL));
 
 	if (client->irq) {
 		ret = request_threaded_irq(client->irq, NULL,
@@ -827,7 +831,6 @@ irq_clear_error:
 	free_irq(client->irq, chip);
 irq_reg_error:
 	cancel_delayed_work_sync(&chip->work);
-	power_supply_unregister(&chip->battery);
 bg_err:
 	power_supply_unregister(&chip->battery);
 error:

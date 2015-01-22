@@ -2,7 +2,7 @@
  *  linux/include/linux/mmc/sdhci.h - Secure Digital Host Controller Interface
  *
  *  Copyright (C) 2005-2008 Pierre Ossman, All Rights Reserved.
- *  Copyright (c) 2013, NVIDIA CORPORATION. All Rights Reserved.
+ *  Copyright (c) 2013-2014, NVIDIA CORPORATION. All Rights Reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -19,10 +19,46 @@
 #include <linux/mmc/host.h>
 #include <linux/sysedp.h>
 
+#ifdef CONFIG_DEBUG_FS
+struct data_stat_entry {
+	u32 max_kbps;
+	u32 min_kbps;
+	ktime_t start_ktime;
+	u32 duration_usecs;
+	u32 total_usecs;
+	u32 current_transferred_bytes;
+	u64 total_bytes;
+	u32 stat_blk_size;
+	u32 stat_blks_per_transfer;
+	struct data_stat_entry *next;
+};
+
+/*
+ * 1. Each block size has a element of type struct data_stat_entry
+ * 2. For a particular block size we maintain a table of
+ *    performance values observed. This table is used to
+ *    find the most frequent performance value
+ */
+struct data_stat {
+	/*
+	 * use insertion sort to keep the list sorted with
+	 * increasing block size
+	 */
+	struct data_stat_entry *head;
+	/* actual number of stat entries */
+	u8	stat_size;
+};
+#endif
+
 struct sdhci_host {
 	/* Data set by hardware interface driver */
 	const char *hw_name;	/* Hardware bus name */
+#ifdef CONFIG_DEBUG_FS
 	struct dentry           *debugfs_root;
+	/* collect data transfer rate statistics */
+	struct data_stat sdhci_data_stat;
+	unsigned int no_data_transfer_count;
+#endif
 
 	u32 quirks;	/* Deviations from spec. */
 
@@ -175,6 +211,7 @@ struct sdhci_host {
 
 	dma_addr_t adma_addr;	/* Mapped ADMA descr. table */
 	dma_addr_t align_addr;	/* Mapped bounce buffer */
+	bool use_dma_alloc;
 
 	struct tasklet_struct card_tasklet;	/* Tasklet structures */
 	struct tasklet_struct finish_tasklet;
@@ -200,8 +237,11 @@ struct sdhci_host {
 	struct sysedp_consumer *sysedpc;
 
 	struct delayed_work	delayed_clk_gate_wrk;
-	bool			sdio_clk_gate_init_done;
 	bool			is_clk_on;
+#ifdef CONFIG_DEBUG_FS
+	bool			enable_sdhci_perf_stats;
+#endif
+	int			clk_gate_tmout_ticks;
 
 	unsigned long private[0] ____cacheline_aligned;
 };

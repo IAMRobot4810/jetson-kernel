@@ -5,7 +5,7 @@
  * Author:
  *	Colin Cross <ccross@google.com>
  *
- * Copyright (c) 2010-2013, NVIDIA CORPORATION.  All rights reserved.
+ * Copyright (c) 2010-2014, NVIDIA CORPORATION.  All rights reserved.
  *
  * This software is licensed under the terms of the GNU General Public
  * License version 2, as published by the Free Software Foundation, and
@@ -39,12 +39,12 @@
 #include <linux/tegra-timer.h>
 
 #include <mach/edp.h>
+#include <mach/tegra_emc.h>
 
 #include "board.h"
 #include "clock.h"
 #include "dvfs.h"
 #include "iomap.h"
-#include "tegra_emc.h"
 #include "cpu-tegra.h"
 
 /* Global data of Tegra CPU CAR ops */
@@ -150,6 +150,7 @@ unsigned long clk_get_max_rate(struct clk *c)
 {
 		return c->max_rate;
 }
+EXPORT_SYMBOL(clk_get_max_rate);
 
 unsigned long clk_get_min_rate(struct clk *c)
 {
@@ -261,7 +262,7 @@ void clk_init(struct clk *c)
 	mutex_unlock(&clock_list_lock);
 }
 
-static int clk_enable_locked(struct clk *c)
+int clk_enable_locked(struct clk *c)
 {
 	int ret = 0;
 
@@ -296,7 +297,7 @@ static int clk_enable_locked(struct clk *c)
 	return ret;
 }
 
-static void clk_disable_locked(struct clk *c)
+void clk_disable_locked(struct clk *c)
 {
 	if (c->refcnt == 0) {
 		WARN(1, "Attempting to disable clock %s with refcnt 0", c->name);
@@ -528,6 +529,19 @@ int clk_set_rate_locked(struct clk *c, unsigned long rate)
 	if (rate > max_rate)
 		rate = max_rate;
 
+	/* Check if rate is supposed to be fixed */
+	if (c->fixed_target_rate) {
+		/* If it is already set at target rate, do nothing */
+		if (old_rate == c->fixed_target_rate)
+			return 0;
+
+		pr_warn("clock %s was not running at expected target rate %lu"
+				" (old rate = %lu, requested rate = %lu), "
+				"fixing the same",
+				c->name, c->fixed_target_rate, old_rate, rate);
+		rate = c->fixed_target_rate;
+	}
+
 	if (c->ops && c->ops->round_rate) {
 		new_rate = c->ops->round_rate(c, rate);
 
@@ -545,8 +559,8 @@ int clk_set_rate_locked(struct clk *c, unsigned long rate)
 	 * at given voltage. To guarantee h/w switch to the new setting
 	 * enable clock while setting rate.
 	 */
-	if ((c->refcnt == 0) && (c->flags & (DIV_U71 | DIV_U16)) &&
-		clk_is_auto_dvfs(c)) {
+	if ((c->refcnt == 0) && (c->flags & PERIPH_DIV) &&
+		clk_is_auto_dvfs(c) && !clk_can_set_disabled_div(c)) {
 		pr_debug("Setting rate of clock %s with refcnt 0\n", c->name);
 		ret = clk_enable_locked(c);
 		if (ret)
@@ -574,6 +588,7 @@ int clk_set_rate_locked(struct clk *c, unsigned long rate)
 out:
 	if (disable)
 		clk_disable_locked(c);
+
 	return ret;
 }
 
@@ -618,6 +633,7 @@ unsigned long clk_get_rate_all_locked(struct clk *c)
 
 	rate = c->rate;
 	rate *= mul;
+	rate += div - 1; /* round up */
 	do_div(rate, div);
 
 	return rate;
@@ -958,8 +974,10 @@ static void __init tegra_clk_verify_rates(void)
 
 void __init tegra_common_init_clock(void)
 {
+#ifndef CONFIG_ARM64
 #if defined(CONFIG_HAVE_ARM_TWD) || defined(CONFIG_ARM_ARCH_TIMER)
 	tegra_cpu_timer_init();
+#endif
 #endif
 	tegra_clk_verify_rates();
 }
@@ -976,6 +994,19 @@ void __init tegra_clk_verify_parents(void)
 		if (!tegra_clk_is_parent_allowed(c, p))
 			WARN(1, "tegra: parent %s is not allowed for %s\n",
 			     p->name, c->name);
+	}
+	mutex_unlock(&clock_list_lock);
+}
+
+void __init tegra_clk_set_disabled_div_all(void)
+{
+	struct clk *c;
+
+	mutex_lock(&clock_list_lock);
+
+	list_for_each_entry(c, &clocks, node) {
+		if (c->flags & PERIPH_DIV)
+			c->set_disabled_div = true;
 	}
 	mutex_unlock(&clock_list_lock);
 }
@@ -1139,6 +1170,62 @@ int tegra_clk_register_export_ops(struct clk *c,
 
 	return 0;
 }
+EXPORT_SYMBOL(tegra_clk_register_export_ops);
+
+
+/* Change DFLL range : Refer enum dfll_range */
+int tegra_clk_dfll_range_control(enum dfll_range use_dfll)
+{
+	int ret = 0;
+	unsigned long c_flags, p_flags;
+	unsigned int old_use_dfll;
+	struct clk *c = tegra_get_clock_by_name("cpu");
+	struct clk *dfll = tegra_get_clock_by_name("dfll_cpu");
+
+	if (!c || !c->parent || !c->parent->dvfs || !dfll)
+		return -ENOSYS;
+
+	ret = tegra_cpu_reg_mode_force_normal(true);
+	if (ret) {
+		pr_err("%s: Failed to force regulator normal mode\n", __func__);
+		return ret;
+	}
+
+	clk_lock_save(c, &c_flags);
+	if (dfll->state == UNINITIALIZED) {
+		pr_err("%s: DFLL is not initialized\n", __func__);
+		goto error_1;
+	}
+	if (c->parent->u.cpu.mode == MODE_LP) {
+		pr_err("%s: DFLL is not used on LP CPU\n", __func__);
+		goto error_1;
+	}
+
+	clk_lock_save(c->parent, &p_flags);
+	old_use_dfll = tegra_dvfs_get_dfll_range(c->parent->dvfs);
+	ret = tegra_dvfs_set_dfll_range(c->parent->dvfs, use_dfll);
+	if (!ret) {
+		/* Get the current parent clock running rate and
+		   set it to new parent clock */
+		ret = clk_set_rate_locked(c->parent,
+			clk_get_rate_locked(c->parent));
+		if (ret) {
+			tegra_dvfs_set_dfll_range(
+				c->parent->dvfs, old_use_dfll);
+		}
+	}
+
+	clk_unlock_restore(c->parent, &p_flags);
+	clk_unlock_restore(c, &c_flags);
+	tegra_update_cpu_edp_limits();
+	return ret;
+
+error_1:
+	clk_unlock_restore(c, &c_flags);
+	tegra_cpu_reg_mode_force_normal(false);
+	return -ENOSYS;
+}
+
 
 #define OSC_FREQ_DET			0x58
 #define OSC_FREQ_DET_TRIG		BIT(31)

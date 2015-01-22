@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2012-2013, NVIDIA CORPORATION.  All rights reserved.
+ * Copyright (c) 2012-2014, NVIDIA CORPORATION.  All rights reserved.
  *
  * this program is free software; you can redistribute it and/or modify
  * it under the terms of the gnu general public license as published by
@@ -18,6 +18,7 @@
 
 #include <linux/tegra-soc.h>
 #include <linux/tegra-fuse.h>
+#include "fuse.h"
 
 #ifndef __TEGRA11x_FUSE_OFFSETS_H
 #define __TEGRA11x_FUSE_OFFSETS_H
@@ -111,14 +112,6 @@
 #define TEGRA_FUSE_SUPPLY	"vpp_fuse"
 
 #define PGM_TIME_US 12
-
-#define CHK_ERR(x) \
-{ \
-	if (x) { \
-		pr_err("%s: sysfs_create_file fail(%d)!", __func__, x); \
-		return x; \
-	} \
-}
 
 DEVICE_ATTR(public_key, 0440, tegra_fuse_show, tegra_fuse_store);
 DEVICE_ATTR(pkc_disable, 0440, tegra_fuse_show, tegra_fuse_store);
@@ -236,19 +229,21 @@ int tegra_fuse_calib_base_get_cp(u32 *base_cp, s32 *shifted_cp)
 	s32 cp;
 	u32 val = tegra_fuse_readl(FUSE_VSENSOR_CALIB_0);
 
-	*base_cp = (((val) &
-		(FUSE_BASE_CP_MASK << FUSE_BASE_CP_SHIFT))
-		>> FUSE_BASE_CP_SHIFT);
-	if (!(*base_cp)) {
-		pr_err("soctherm: ERROR: Improper FUSE. SOC_THERM disabled.\n");
+	if (!val)
 		return -EINVAL;
-	}
-	cp = (((val) &
-		(FUSE_SHIFT_CP_MASK << FUSE_SHIFT_CP_SHIFT))
-		>> FUSE_SHIFT_CP_SHIFT);
-	*shifted_cp = ((s32)(cp) <<
-		(32 - FUSE_SHIFT_CP_BITS) >>
-		(32 - FUSE_SHIFT_CP_BITS));
+
+	if (base_cp)
+		*base_cp = (((val) & (FUSE_BASE_CP_MASK
+					<< FUSE_BASE_CP_SHIFT))
+					>> FUSE_BASE_CP_SHIFT);
+
+	cp = (((val) & (FUSE_SHIFT_CP_MASK
+				<< FUSE_SHIFT_CP_SHIFT))
+				>> FUSE_SHIFT_CP_SHIFT);
+	if (shifted_cp)
+		*shifted_cp = ((s32)(cp)
+				<< (32 - FUSE_SHIFT_CP_BITS)
+				>> (32 - FUSE_SHIFT_CP_BITS));
 	return 0;
 }
 
@@ -257,19 +252,21 @@ int tegra_fuse_calib_base_get_ft(u32 *base_ft, s32 *shifted_ft)
 	s32 ft;
 	u32 val = tegra_fuse_readl(FUSE_VSENSOR_CALIB_0);
 
-	*base_ft = (((val) &
-		(FUSE_BASE_FT_MASK << FUSE_BASE_FT_SHIFT))
-		>> FUSE_BASE_FT_SHIFT);
-	if (!(*base_ft)) {
-		pr_err("soctherm: ERROR: Improper FUSE. SOC_THERM disabled.\n");
+	if (!val)
 		return -EINVAL;
-	}
-	ft = (((val) &
-		(FUSE_SHIFT_FT_MASK << FUSE_SHIFT_FT_SHIFT))
-		>> FUSE_SHIFT_FT_SHIFT);
-	*shifted_ft = ((s32)(ft) <<
-		(32 - FUSE_SHIFT_FT_BITS) >>
-		(32 - FUSE_SHIFT_FT_BITS));
+
+	if (base_ft)
+		*base_ft = (((val) & (FUSE_BASE_FT_MASK
+					<< FUSE_BASE_FT_SHIFT))
+					>> FUSE_BASE_FT_SHIFT);
+
+	ft = (((val) & (FUSE_SHIFT_FT_MASK
+				<< FUSE_SHIFT_FT_SHIFT))
+				>> FUSE_SHIFT_FT_SHIFT);
+	if (shifted_ft)
+		*shifted_ft = ((s32)(ft) <<
+			(32 - FUSE_SHIFT_FT_BITS) >>
+			(32 - FUSE_SHIFT_FT_BITS));
 	return 0;
 }
 
@@ -305,10 +302,14 @@ int tegra_fuse_add_sysfs_variables(struct platform_device *pdev,
 		dev_attr_pkc_disable.attr.mode = 0640;
 		dev_attr_vp8_enable.attr.mode = 0640;
 	}
-	CHK_ERR(sysfs_create_file(&pdev->dev.kobj, &dev_attr_public_key.attr));
-	CHK_ERR(sysfs_create_file(&pdev->dev.kobj, &dev_attr_pkc_disable.attr));
-	CHK_ERR(sysfs_create_file(&pdev->dev.kobj, &dev_attr_vp8_enable.attr));
-	CHK_ERR(sysfs_create_file(&pdev->dev.kobj, &dev_attr_odm_lock.attr));
+	CHK_ERR(&pdev->dev, sysfs_create_file(&pdev->dev.kobj,
+				&dev_attr_public_key.attr));
+	CHK_ERR(&pdev->dev, sysfs_create_file(&pdev->dev.kobj,
+				&dev_attr_pkc_disable.attr));
+	CHK_ERR(&pdev->dev, sysfs_create_file(&pdev->dev.kobj,
+				&dev_attr_vp8_enable.attr));
+	CHK_ERR(&pdev->dev, sysfs_create_file(&pdev->dev.kobj,
+				&dev_attr_odm_lock.attr));
 
 	return 0;
 }
@@ -323,11 +324,14 @@ int tegra_fuse_rm_sysfs_variables(struct platform_device *pdev)
 	return 0;
 }
 
-int tegra_fuse_ch_sysfs_perm(struct kobject *kobj)
+int tegra_fuse_ch_sysfs_perm(struct device *dev, struct kobject *kobj)
 {
-	CHK_ERR(sysfs_chmod_file(kobj, &dev_attr_public_key.attr, 0440));
-	CHK_ERR(sysfs_chmod_file(kobj, &dev_attr_pkc_disable.attr, 0440));
-	CHK_ERR(sysfs_chmod_file(kobj, &dev_attr_vp8_enable.attr, 0440));
+	CHK_ERR(dev, sysfs_chmod_file(kobj,
+				&dev_attr_public_key.attr, 0440));
+	CHK_ERR(dev, sysfs_chmod_file(kobj,
+				&dev_attr_pkc_disable.attr, 0440));
+	CHK_ERR(dev, sysfs_chmod_file(kobj,
+				&dev_attr_vp8_enable.attr, 0440));
 
 	return 0;
 }

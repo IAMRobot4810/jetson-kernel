@@ -38,6 +38,9 @@
 #include <linux/power/battery-charger-gauge-comm.h>
 #include <linux/power/reset/system-pmic.h>
 #include <linux/wakelock.h>
+#include <linux/iio/consumer.h>
+#include <linux/iio/types.h>
+#include <linux/iio/iio.h>
 
 #define JETI_TEMP_COLD		0
 #define JETI_TEMP_COOL		10
@@ -52,7 +55,7 @@ static LIST_HEAD(gauge_list);
 
 struct battery_charger_dev {
 	int				cell_id;
-	char				tz_name[THERMAL_NAME_LENGTH];
+	char				*tz_name;
 	struct device			*parent_dev;
 	struct battery_charging_ops	*ops;
 	struct list_head		list;
@@ -70,7 +73,7 @@ struct battery_charger_dev {
 
 struct battery_gauge_dev {
 	int				cell_id;
-	char				tz_name[THERMAL_NAME_LENGTH];
+	char				*tz_name;
 	struct device			*parent_dev;
 	struct battery_gauge_ops	*ops;
 	struct list_head		list;
@@ -80,6 +83,8 @@ struct battery_gauge_dev {
 	int				battery_capacity;
 	int				battery_snapshot_voltage;
 	int				battery_snapshot_capacity;
+	const char			*bat_curr_channel_name;
+	struct iio_channel		*bat_current_iio_channel;
 };
 
 struct battery_gauge_dev *bg_temp;
@@ -101,7 +106,6 @@ static void battery_charger_restart_charging_wq(struct work_struct *work)
 static void battery_charger_thermal_monitor_wq(struct work_struct *work)
 {
 	struct battery_charger_dev *bc_dev;
-	struct battery_gauge_dev *node;
 	struct device *dev;
 	long temperature;
 	bool charger_enable_state;
@@ -111,50 +115,30 @@ static void battery_charger_thermal_monitor_wq(struct work_struct *work)
 
 	bc_dev = container_of(work, struct battery_charger_dev,
 					poll_temp_monitor_wq.work);
+	if (!bc_dev->tz_name)
+		return;
+
 	dev = bc_dev->parent_dev;
-
-	if (bc_dev->enable_thermal_monitor) {
-		mutex_lock(&charger_gauge_list_mutex);
-
-		list_for_each_entry(node, &gauge_list, list) {
-			if (node->cell_id != bc_dev->cell_id)
-				continue;
-			if (node->ops && node->ops->get_battery_temp) {
-				ret = node->ops->get_battery_temp();
-				if (ret < 0) {
-					dev_err(dev,
-					"Temperature read failed: %d\n ",
-					ret);
-					mutex_unlock(&charger_gauge_list_mutex);
-					goto exit;
-				}
-				temperature = ret;
-			}
-		}
-		mutex_unlock(&charger_gauge_list_mutex);
-	} else {
-		if (!bc_dev->battery_tz)
-			bc_dev->battery_tz =
-			thermal_zone_device_find_by_name(bc_dev->tz_name);
+	if (!bc_dev->battery_tz) {
+		bc_dev->battery_tz = thermal_zone_device_find_by_name(
+					bc_dev->tz_name);
 
 		if (!bc_dev->battery_tz) {
 			dev_info(dev,
-			"Battery thermal zone %s is not registered yet\n",
-			bc_dev->tz_name);
+			    "Battery thermal zone %s is not registered yet\n",
+				bc_dev->tz_name);
 			schedule_delayed_work(&bc_dev->poll_temp_monitor_wq,
-			msecs_to_jiffies(bc_dev->polling_time_sec * HZ));
+			    msecs_to_jiffies(bc_dev->polling_time_sec * HZ));
 			return;
 		}
-
-		ret = thermal_zone_get_temp(bc_dev->battery_tz,
-				&temperature);
-		if (ret < 0) {
-			dev_err(dev, "Temperature read failed: %d\n ",
-				ret);
-			goto exit;
-		}
-		temperature = temperature / 1000;
 	}
+
+	ret = thermal_zone_get_temp(bc_dev->battery_tz, &temperature);
+	if (ret < 0) {
+		dev_err(dev, "Temperature read failed: %d\n ", ret);
+		goto exit;
+	}
+	temperature = temperature / 1000;
 
 	charger_enable_state = true;
 	charger_current_half = false;
@@ -186,7 +170,6 @@ int battery_charger_set_current_broadcast(struct battery_charger_dev *bc_dev)
         int ret = 0;
 
         if (!bc_dev) {
-                dev_err(bc_dev->parent_dev, "Invalid parameters\n");
                 return -EINVAL;
         }
 
@@ -207,7 +190,7 @@ EXPORT_SYMBOL_GPL(battery_charger_set_current_broadcast);
 int battery_charger_thermal_start_monitoring(
 	struct battery_charger_dev *bc_dev)
 {
-	if (!bc_dev || !bc_dev->polling_time_sec)
+	if (!bc_dev || !bc_dev->polling_time_sec || !bc_dev->tz_name)
 		return -EINVAL;
 
 	bc_dev->start_monitoring = true;
@@ -220,7 +203,7 @@ EXPORT_SYMBOL_GPL(battery_charger_thermal_start_monitoring);
 int battery_charger_thermal_stop_monitoring(
 	struct battery_charger_dev *bc_dev)
 {
-	if (!bc_dev || !bc_dev->polling_time_sec)
+	if (!bc_dev || !bc_dev->polling_time_sec || !bc_dev->tz_name)
 		return -EINVAL;
 
 	bc_dev->start_monitoring = false;
@@ -282,15 +265,45 @@ static ssize_t battery_show_snapshot_capacity(struct device *dev,
 				bg_dev->battery_snapshot_capacity);
 }
 
+static ssize_t battery_show_max_capacity(struct device *dev,
+				struct device_attribute *attr,
+				char *buf)
+{
+	struct iio_channel *channel;
+	int val, ret;
+
+	channel = iio_channel_get(dev, "batt_id");
+	if (IS_ERR(channel)) {
+		dev_err(dev,
+			"%s: Failed to get channel batt_id, %ld\n",
+			__func__, PTR_ERR(channel));
+			return 0;
+	}
+
+	ret = iio_read_channel_raw(channel, &val);
+	if (ret < 0) {
+		dev_err(dev,
+			"%s: Failed to read channel, %d\n",
+			__func__, ret);
+			return 0;
+	}
+
+	return snprintf(buf, MAX_STR_PRINT, "%d\n", val);
+}
+
 static DEVICE_ATTR(battery_snapshot_voltage, S_IRUGO,
 		battery_show_snapshot_voltage, NULL);
 
 static DEVICE_ATTR(battery_snapshot_capacity, S_IRUGO,
 		battery_show_snapshot_capacity, NULL);
 
+static DEVICE_ATTR(battery_max_capacity, S_IRUGO,
+		battery_show_max_capacity, NULL);
+
 static struct attribute *battery_snapshot_attributes[] = {
 	&dev_attr_battery_snapshot_voltage.attr,
 	&dev_attr_battery_snapshot_capacity.attr,
+	&dev_attr_battery_max_capacity.attr,
 	NULL
 };
 
@@ -335,6 +348,37 @@ int battery_gauge_record_snapshot_values(struct battery_gauge_dev *bg_dev,
 	return 0;
 }
 EXPORT_SYMBOL_GPL(battery_gauge_record_snapshot_values);
+
+int battery_gauge_get_scaled_soc(struct battery_gauge_dev *bg_dev,
+	int actual_soc_semi, int thresod_soc)
+{
+	int thresod_soc_semi = thresod_soc * 100;
+
+	if (actual_soc_semi >= 10000)
+		return 100;
+
+	if (actual_soc_semi <= thresod_soc_semi)
+		return 0;
+
+	return (actual_soc_semi - thresod_soc_semi) / (100 - thresod_soc);
+}
+EXPORT_SYMBOL_GPL(battery_gauge_get_scaled_soc);
+
+int battery_gauge_get_adjusted_soc(struct battery_gauge_dev *bg_dev,
+	int min_soc, int max_soc, int actual_soc_semi)
+{
+	int min_soc_semi = min_soc * 100;
+	int max_soc_semi = max_soc * 100;
+
+	if (actual_soc_semi >= max_soc_semi)
+		return 100;
+
+	if (actual_soc_semi <= min_soc_semi)
+		return 0;
+
+	return (actual_soc_semi - min_soc_semi + 50) / (max_soc - min_soc);
+}
+EXPORT_SYMBOL_GPL(battery_gauge_get_adjusted_soc);
 
 void battery_charging_restart_cancel(struct battery_charger_dev *bc_dev)
 {
@@ -446,21 +490,10 @@ struct battery_charger_dev *battery_charger_register(struct device *dev,
 	bc_dev->drv_data = drv_data;
 
 	/* Thermal monitoring */
-	if (bci->enable_thermal_monitor) {
+	if (bci->tz_name) {
+		bc_dev->tz_name = kstrdup(bci->tz_name, GFP_KERNEL);
 		bc_dev->polling_time_sec = bci->polling_time_sec;
-		bc_dev->enable_thermal_monitor =
-			bci->enable_thermal_monitor;
-		INIT_DELAYED_WORK(&bc_dev->poll_temp_monitor_wq,
-				battery_charger_thermal_monitor_wq);
-	} else if (!bc_dev->tz_name) {
-		bc_dev->polling_time_sec = bci->polling_time_sec;
-		strcpy(bc_dev->tz_name, bci->tz_name ? : "");
-		bc_dev->battery_tz = thermal_zone_device_find_by_name(
-						bc_dev->tz_name);
-		if (!bc_dev->battery_tz)
-			dev_info(dev,
-			    "Battery thermal zone %s is not registered yet\n",
-				bc_dev->tz_name);
+		bc_dev->enable_thermal_monitor = true;
 		INIT_DELAYED_WORK(&bc_dev->poll_temp_monitor_wq,
 				battery_charger_thermal_monitor_wq);
 	}
@@ -495,7 +528,7 @@ int battery_gauge_get_battery_temperature(struct battery_gauge_dev *bg_dev,
 	int ret;
 	long temperature;
 
-	if (!bg_dev)
+	if (!bg_dev || !bg_dev->tz_name)
 		return -EINVAL;
 
 	if (!bg_dev->battery_tz)
@@ -517,6 +550,36 @@ int battery_gauge_get_battery_temperature(struct battery_gauge_dev *bg_dev,
 	return 0;
 }
 EXPORT_SYMBOL_GPL(battery_gauge_get_battery_temperature);
+
+int battery_gauge_get_battery_current(struct battery_gauge_dev *bg_dev,
+	int *current_ma)
+{
+	int ret;
+
+	if (!bg_dev || !bg_dev->bat_curr_channel_name)
+		return -EINVAL;
+
+	if (!bg_dev->bat_current_iio_channel)
+		bg_dev->bat_current_iio_channel =
+			iio_channel_get(bg_dev->parent_dev,
+					bg_dev->bat_curr_channel_name);
+	if (!bg_dev->bat_current_iio_channel || IS_ERR(bg_dev->bat_current_iio_channel)) {
+		dev_info(bg_dev->parent_dev,
+			"Battery IIO current channel %s not registered yet\n",
+			bg_dev->bat_curr_channel_name);
+		bg_dev->bat_current_iio_channel = NULL;
+		return -ENODEV;
+	}
+
+	ret = iio_read_channel_processed(bg_dev->bat_current_iio_channel,
+			current_ma);
+	if (ret < 0) {
+		dev_err(bg_dev->parent_dev, " The channel read failed: %d\n", ret);
+		return ret;
+	}
+	return 0;
+}
+EXPORT_SYMBOL_GPL(battery_gauge_get_battery_current);
 
 struct battery_gauge_dev *battery_gauge_register(struct device *dev,
 	struct battery_gauge_info *bgi, void *drv_data)
@@ -548,11 +611,21 @@ struct battery_gauge_dev *battery_gauge_register(struct device *dev,
 	bg_dev->ops = bgi->bg_ops;
 	bg_dev->parent_dev = dev;
 	bg_dev->drv_data = drv_data;
-	strcpy(bg_dev->tz_name, bgi->tz_name ? : "");
-	bg_dev->battery_tz = thermal_zone_device_find_by_name(bg_dev->tz_name);
-	if (!bg_dev->battery_tz)
-		dev_info(dev, "Battery thermal zone %s is not registered yet\n",
+	bg_dev->tz_name = NULL;
+
+	if (bgi->current_channel_name)
+		bg_dev->bat_curr_channel_name = bgi->current_channel_name;
+
+	if (bgi->tz_name) {
+		bg_dev->tz_name = kstrdup(bgi->tz_name, GFP_KERNEL);
+		bg_dev->battery_tz = thermal_zone_device_find_by_name(
 			bg_dev->tz_name);
+		if (!bg_dev->battery_tz)
+			dev_info(dev,
+			"Battery thermal zone %s is not registered yet\n",
+			bg_dev->tz_name);
+	}
+
 	list_add(&bg_dev->list, &gauge_list);
 	mutex_unlock(&charger_gauge_list_mutex);
 	bg_temp = bg_dev;

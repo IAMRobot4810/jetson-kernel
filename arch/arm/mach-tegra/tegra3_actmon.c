@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2012-2013, NVIDIA CORPORATION.  All rights reserved.
+ * Copyright (c) 2012-2014, NVIDIA CORPORATION.  All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -148,8 +148,8 @@ static inline void actmon_writel(u32 val, u32 offset)
 }
 static inline void actmon_wmb(void)
 {
-	wmb();
 	actmon_readl(ACTMON_GLB_STATUS);
+	dsb();
 }
 
 #define offs(x)		(dev->reg + x)
@@ -301,9 +301,8 @@ irqreturn_t actmon_dev_fn(int irq, void *dev_id)
 	freq += dev->boost_freq;
 
 	if (dev->avg_dependency_threshold &&
-		((dev->avg_count >= dev->avg_dependency_threshold)
-			|| (!static_cpu_emc_freq)))
-		freq = static_cpu_emc_freq;
+		(dev->avg_count >= dev->avg_dependency_threshold))
+			freq = static_cpu_emc_freq;
 
 	dev->target_freq = freq;
 
@@ -541,7 +540,9 @@ static struct actmon_dev actmon_dev_emc = {
 	.boost_freq_step	= 16000,
 	.boost_up_coef		= 200,
 	.boost_down_coef	= 50,
-#if defined(CONFIG_ARCH_TEGRA_14x_SOC)
+#if (defined(CONFIG_ARCH_TEGRA_14x_SOC) || \
+	 defined(CONFIG_ARCH_TEGRA_12x_SOC) || \
+	 defined(CONFIG_ARCH_TEGRA_13x_SOC))
 	.boost_up_threshold	= 70,
 	.boost_down_threshold	= 50,
 #else
@@ -554,7 +555,7 @@ static struct actmon_dev actmon_dev_emc = {
 	.avg_window_log2	= ACTMON_DEFAULT_AVG_WINDOW_LOG2,
 #if defined(CONFIG_ARCH_TEGRA_3x_SOC) || defined(CONFIG_ARCH_TEGRA_14x_SOC)
 	.count_weight		= 0x200,
-#elif defined(CONFIG_ARCH_TEGRA_12x_SOC)
+#elif defined(CONFIG_ARCH_TEGRA_12x_SOC) || defined(CONFIG_ARCH_TEGRA_13x_SOC)
 	.count_weight		= 0x400,
 #else
 	.count_weight		= 0x100,
@@ -600,8 +601,11 @@ static struct actmon_dev actmon_dev_avp = {
 	},
 };
 
-
+#if defined(CONFIG_ARCH_TEGRA_12x_SOC) || defined(CONFIG_ARCH_TEGRA_13x_SOC)
+#define CPU_AVG_ACT_THRESHOLD 2000
+#else
 #define CPU_AVG_ACT_THRESHOLD 50000
+#endif
 /* EMC-cpu activity monitor: frequency sampling device:
  * activity counter is incremented every 256 memory transactions, and
  * each transaction takes 2 EMC clocks; count_weight = 512 on Tegra3.
@@ -625,7 +629,7 @@ static struct actmon_dev actmon_dev_cpu_emc = {
 	.avg_window_log2	= ACTMON_DEFAULT_AVG_WINDOW_LOG2,
 #if defined(CONFIG_ARCH_TEGRA_3x_SOC) || defined(CONFIG_ARCH_TEGRA_14x_SOC)
 	.count_weight		= 0x200,
-#elif defined(CONFIG_ARCH_TEGRA_12x_SOC)
+#elif defined(CONFIG_ARCH_TEGRA_12x_SOC) || defined(CONFIG_ARCH_TEGRA_13x_SOC)
 	.count_weight		= 0x400,
 #else
 	.count_weight		= 0x100,

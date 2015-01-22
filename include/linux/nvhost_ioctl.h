@@ -3,7 +3,7 @@
  *
  * Tegra graphics host driver
  *
- * Copyright (c) 2009-2013, NVIDIA Corporation.  All rights reserved.
+ * Copyright (c) 2009-2014, NVIDIA Corporation.  All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -91,6 +91,21 @@ struct nvhost_get_param_args {
 struct nvhost_get_param_arg {
 	__u32 param;
 	__u32 value;
+};
+
+struct nvhost_get_client_managed_syncpt_arg {
+	__u64 name;
+	__u32 param;
+	__u32 value;
+};
+
+struct nvhost_free_client_managed_syncpt_arg {
+	__u32 param;
+	__u32 value;
+};
+
+struct nvhost_channel_open_args {
+	__s32 channel_fd;
 };
 
 struct nvhost_set_nvmap_fd_args {
@@ -185,11 +200,6 @@ struct nvhost_wait_args {
 struct nvhost_cycle_stats_args {
 	__u32 nvmap_handle;
 } __packed;
-
-struct nvhost_read_3d_reg_args {
-	__u32 offset;
-	__u32 value;
-};
 
 enum nvhost_clk_attr {
 	NVHOST_CLOCK = 0,
@@ -288,13 +298,12 @@ struct nvhost_submit_args {
 	__u32 num_relocs;
 	__u32 num_waitchks;
 	__u32 timeout;
-	__u32 syncpt_incrs;
-	__u32 fence;		/* Return value */
-	__u64 cmdbuf_exts;
 	__u32 flags;
+	__u32 fence;		/* Return value */
+	__u64 syncpt_incrs;
+	__u64 cmdbuf_exts;
 
-	__u32 reserved;
-	__u64 pad[2];		/* future expansion */
+	__u64 pad[3];		/* future expansion */
 
 	__u64 cmdbufs;
 	__u64 relocs;
@@ -333,8 +342,6 @@ struct nvhost_set_ctxswitch_args {
 	_IOW(NVHOST_IOCTL_MAGIC, 5, struct nvhost_set_nvmap_fd_args)
 #define NVHOST_IOCTL_CHANNEL_NULL_KICKOFF	\
 	_IOR(NVHOST_IOCTL_MAGIC, 6, struct nvhost_get_param_args)
-#define NVHOST_IOCTL_CHANNEL_READ_3D_REG \
-	_IOWR(NVHOST_IOCTL_MAGIC, 8, struct nvhost_read_3d_reg_args)
 #define NVHOST_IOCTL_CHANNEL_GET_CLK_RATE		\
 	_IOR(NVHOST_IOCTL_MAGIC, 9, struct nvhost_clk_rate_args)
 #define NVHOST_IOCTL_CHANNEL_SET_CLK_RATE		\
@@ -355,6 +362,10 @@ struct nvhost_set_ctxswitch_args {
 	_IOWR(NVHOST_IOCTL_MAGIC, 17, struct nvhost_get_param_arg)
 #define NVHOST_IOCTL_CHANNEL_SET_TIMEOUT_EX	\
 	_IOWR(NVHOST_IOCTL_MAGIC, 18, struct nvhost_set_timeout_ex_args)
+#define NVHOST_IOCTL_CHANNEL_GET_CLIENT_MANAGED_SYNCPOINT	\
+	_IOWR(NVHOST_IOCTL_MAGIC, 19, struct nvhost_get_client_managed_syncpt_arg)
+#define NVHOST_IOCTL_CHANNEL_FREE_CLIENT_MANAGED_SYNCPOINT	\
+	_IOWR(NVHOST_IOCTL_MAGIC, 20, struct nvhost_free_client_managed_syncpt_arg)
 #define NVHOST_IOCTL_CHANNEL_GET_MODMUTEX	\
 	_IOWR(NVHOST_IOCTL_MAGIC, 23, struct nvhost_get_param_arg)
 #define NVHOST_IOCTL_CHANNEL_SET_CTXSWITCH	\
@@ -383,9 +394,11 @@ struct nvhost_set_ctxswitch_args {
 	_IOWR(NVHOST_IOCTL_MAGIC, 110, struct nvhost_zcull_bind_args)
 #define NVHOST_IOCTL_CHANNEL_SET_ERROR_NOTIFIER  \
 	_IOWR(NVHOST_IOCTL_MAGIC, 111, struct nvhost_set_error_notifier)
+#define NVHOST_IOCTL_CHANNEL_OPEN	\
+	_IOR(NVHOST_IOCTL_MAGIC,  112, struct nvhost_channel_open_args)
 
 #define NVHOST_IOCTL_CHANNEL_LAST	\
-	_IOC_NR(NVHOST_IOCTL_CHANNEL_SET_ERROR_NOTIFIER)
+	_IOC_NR(NVHOST_IOCTL_CHANNEL_OPEN)
 #define NVHOST_IOCTL_CHANNEL_MAX_ARG_SIZE sizeof(struct nvhost_submit_args)
 
 struct nvhost_ctrl_syncpt_read_args {
@@ -440,6 +453,11 @@ struct nvhost_ctrl_sync_fence_create_args {
 	__u64 name; /* const char* */
 };
 
+struct nvhost_ctrl_sync_fence_name_args {
+	__u64 name; /* const char* for name */
+	__s32 fence_fd; /* fd of fence */
+};
+
 struct nvhost_ctrl_module_mutex_args {
 	__u32 id;
 	__u32 lock;
@@ -488,9 +506,11 @@ enum nvhost_module_id {
 	_IOWR(NVHOST_IOCTL_MAGIC, 11, struct nvhost_ctrl_sync_fence_create_args)
 #define NVHOST_IOCTL_CTRL_MODULE_REGRDWR	\
 	_IOWR(NVHOST_IOCTL_MAGIC, 12, struct nvhost_ctrl_module_regrdwr_args)
+#define NVHOST_IOCTL_CTRL_SYNC_FENCE_SET_NAME  \
+	_IOWR(NVHOST_IOCTL_MAGIC, 13, struct nvhost_ctrl_sync_fence_name_args)
 
 #define NVHOST_IOCTL_CTRL_LAST			\
-	_IOC_NR(NVHOST_IOCTL_CTRL_MODULE_REGRDWR)
+	_IOC_NR(NVHOST_IOCTL_CTRL_SYNC_FENCE_SET_NAME)
 #define NVHOST_IOCTL_CTRL_MAX_ARG_SIZE	\
 	sizeof(struct nvhost_ctrl_syncpt_waitmex_args)
 

@@ -1,5 +1,5 @@
 /* Copyright (C) 2012 Invensense, Inc.
- * Copyright (c) 2013, NVIDIA CORPORATION.  All rights reserved.
+ * Copyright (c) 2013-2014, NVIDIA CORPORATION.  All rights reserved.
  *
  * This software is licensed under the terms of the GNU General Public
  * License version 2, as published by the Free Software Foundation, and
@@ -504,10 +504,7 @@ static int akm_delay(struct akm_inf *inf, unsigned int delay_us)
 					(unsigned int)delay_us);
 	if (!err) {
 		if (inf->dev_id == COMPASS_ID_AK8963) {
-			if (delay_us == (AKM_INPUT_DELAY_MS_MIN * 1000))
-				mode = AKM_CNTL1_MODE_CONT2;
-			else
-				mode = AKM_CNTL1_MODE_SINGLE;
+			mode = AKM_CNTL1_MODE_SINGLE;
 			err = akm_mode_wr(inf, false, inf->range_i, mode);
 		}
 	}
@@ -1429,6 +1426,10 @@ static struct mpu_platform_data *akm_parse_dt(struct i2c_client *client)
 		return ERR_PTR(-EINVAL);
 	}
 
+	if (of_property_read_u32(np, "sec-slave-id",
+				&pdata->sec_slave_id) < 0)
+		dev_info(&client->dev, "Cannot read sec-slave-id\n");
+
 	return pdata;
 }
 
@@ -1461,13 +1462,19 @@ static int akm_probe(struct i2c_client *client,
 	inf->pdata = *pd;
 	akm_pm_init(inf);
 	err = akm_id(inf);
-	akm_pm(inf, false);
 	if (err == -EAGAIN)
 		goto akm_probe_again;
 	else if (err)
 		goto akm_probe_err;
-
 	mutex_init(&inf->mutex_data);
+	if (!inf->initd) {
+		if (akm_init_hw(inf))
+			dev_err(&client->dev,
+			"%s akm init_hw failed: calibration not loaded\n",
+			__func__);
+	}
+	akm_pm(inf, false);
+
 	err = akm_input_create(inf);
 	if (err)
 		goto akm_probe_err;
@@ -1536,7 +1543,7 @@ static void __exit akm_exit(void)
 	i2c_del_driver(&akm_driver);
 }
 
-module_init(akm_init);
+late_initcall(akm_init);
 module_exit(akm_exit);
 
 MODULE_LICENSE("GPL");

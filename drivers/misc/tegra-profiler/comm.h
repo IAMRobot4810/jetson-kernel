@@ -1,7 +1,7 @@
 /*
  * drivers/misc/tegra-profiler/comm.h
  *
- * Copyright (c) 2013, NVIDIA CORPORATION.  All rights reserved.
+ * Copyright (c) 2014, NVIDIA CORPORATION.  All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify it
  * under the terms and conditions of the GNU General Public License,
@@ -23,6 +23,9 @@ struct quadd_record_data;
 struct quadd_comm_cap;
 struct quadd_module_state;
 struct miscdevice;
+struct quadd_parameters;
+struct quadd_extables;
+struct quadd_unwind_ctx;
 
 struct quadd_ring_buffer {
 	char *buf;
@@ -35,7 +38,18 @@ struct quadd_ring_buffer {
 	size_t max_fill_count;
 };
 
-struct quadd_parameters;
+struct quadd_iovec {
+	void *base;
+	size_t len;
+};
+
+struct quadd_extabs_mmap {
+	struct vm_area_struct *mmap_vma;
+	void *data;
+
+	struct list_head list;
+	struct list_head ex_entries;
+};
 
 struct quadd_comm_control_interface {
 	int (*start)(void);
@@ -44,11 +58,14 @@ struct quadd_comm_control_interface {
 			      uid_t *debug_app_uid);
 	void (*get_capabilities)(struct quadd_comm_cap *cap);
 	void (*get_state)(struct quadd_module_state *state);
+	int (*set_extab)(struct quadd_extables *extabs,
+			 struct quadd_extabs_mmap *mmap);
+	void (*delete_mmap)(struct quadd_extabs_mmap *mmap);
 };
 
 struct quadd_comm_data_interface {
-	void (*put_sample)(struct quadd_record_data *data, char *extra_data,
-			   unsigned int extra_length);
+	void (*put_sample)(struct quadd_record_data *data,
+			   struct quadd_iovec *vec, int vec_count);
 	void (*reset)(void);
 	int (*is_active)(void);
 };
@@ -71,6 +88,9 @@ struct quadd_comm_ctx {
 	wait_queue_head_t read_wait;
 
 	struct miscdevice *misc_dev;
+
+	struct list_head ext_mmaps;
+	spinlock_t mmaps_lock;
 };
 
 struct quadd_comm_data_interface *

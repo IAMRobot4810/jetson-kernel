@@ -1,7 +1,7 @@
 /*
  * tegra_rt5639.c - Tegra machine ASoC driver for boards using ALC5639 codec.
  *
- * Copyright (c) 2013, NVIDIA CORPORATION. All rights reserved.
+ * Copyright (c) 2013-2014, NVIDIA CORPORATION. All rights reserved.
  * This program is free software; you can redistribute it and/or
  * modify it under the terms of the GNU General Public License
  * version 2 as published by the Free Software Foundation.
@@ -57,7 +57,11 @@
 #define DAI_LINK_BTSCO		2
 #define DAI_LINK_VOICE_CALL	3
 #define DAI_LINK_BT_VOICE_CALL	4
-#define NUM_DAI_LINKS		5
+#define DAI_LINK_PCM_OFFLOAD_FE	5
+#define DAI_LINK_COMPR_OFFLOAD_FE	6
+#define DAI_LINK_PCM_OFFLOAD_CAPTURE_FE	7
+#define DAI_LINK_I2S_OFFLOAD_BE	8
+#define NUM_DAI_LINKS		9
 
 extern int g_is_call_mode;
 
@@ -151,12 +155,21 @@ static int tegra_rt5639_call_mode_put(struct snd_kcontrol *kcontrol,
 			machine->codec_info[codec_index].i2s_id, false);
 		tegra_asoc_utils_tristate_dap(
 			machine->codec_info[BASEBAND].i2s_id, false);
-
-		tegra30_make_voice_call_connections(
+		if (machine->is_device_bt)
+			tegra30_make_bt_voice_call_connections(
+			&machine->codec_info[codec_index],
+			&machine->codec_info[BASEBAND], uses_voice_codec);
+		else
+			tegra30_make_voice_call_connections(
 			&machine->codec_info[codec_index],
 			&machine->codec_info[BASEBAND], uses_voice_codec);
 	} else {
-		tegra30_break_voice_call_connections(
+		if (machine->is_device_bt)
+			tegra30_break_bt_voice_call_connections(
+			&machine->codec_info[codec_index],
+			&machine->codec_info[BASEBAND], uses_voice_codec);
+		else
+			tegra30_break_voice_call_connections(
 			&machine->codec_info[codec_index],
 			&machine->codec_info[BASEBAND], uses_voice_codec);
 
@@ -300,12 +313,13 @@ static int tegra_rt5639_hw_params(struct snd_pcm_substream *substream,
 		}
 	}
 
-	/*for 24 bit audio we support only S24_LE (S24_3LE is not supported)
-	which is rendered on bus in 32 bits packet so consider as 32 bit
-	depth in clock calculations, extra 4 is required by codec,
-	God knows why ?*/
+	/*
+	 * For 24 bit audio we support only S24_LE (S24_3LE is not supported)
+	 * which is rendered on bus in 32 bits packet so consider as 32 bit
+	 * depth in clock calculations
+	 */
 	if (sample_size == 24)
-		i2sclock = srate * params_channels(params) * 32 * 4;
+		i2sclock = srate * params_channels(params) * 32;
 	else
 		i2sclock = 0;
 
@@ -474,6 +488,30 @@ static int tegra_hw_free(struct snd_pcm_substream *substream)
 	tegra_asoc_utils_lock_clk_rate(&machine->util_data, 0);
 
 	return 0;
+}
+
+static int tegra_offload_hw_params_be_fixup(struct snd_soc_pcm_runtime *rtd,
+			struct snd_pcm_hw_params *params)
+{
+	if (!params_rate(params)) {
+		struct snd_interval *snd_rate = hw_param_interval(params,
+						SNDRV_PCM_HW_PARAM_RATE);
+
+		snd_rate->min = snd_rate->max = 48000;
+	}
+
+	if (!params_channels(params)) {
+		struct snd_interval *snd_channels = hw_param_interval(params,
+						SNDRV_PCM_HW_PARAM_CHANNELS);
+
+		snd_channels->min = snd_channels->max = 2;
+	}
+	snd_mask_set(hw_param_mask(params, SNDRV_PCM_HW_PARAM_FORMAT),
+				ffs(SNDRV_PCM_FORMAT_S16_LE));
+
+	pr_debug("%s::%d %d %d\n", __func__, params_rate(params),
+			params_channels(params), params_format(params));
+	return 1;
 }
 
 static int tegra_rt5639_voice_call_hw_params(
@@ -891,6 +929,8 @@ static const struct snd_soc_dapm_route ardbeg_audio_map[] = {
 	/*{"micbias1", NULL, "Int Mic"},*/
 	/*{"IN1P", NULL, "micbias1"},*/
 	/*{"IN1N", NULL, "micbias1"},*/
+	/* AHUB BE connections */
+	{"AIF1 Playback", NULL, "I2S1_OUT"},
 };
 
 
@@ -960,6 +1000,7 @@ static struct snd_soc_dai_link tegra_rt5639_dai[NUM_DAI_LINKS] = {
 		.codec_dai_name = "rt5639-aif1",
 		.init = tegra_rt5639_init,
 		.ops = &tegra_rt5639_ops,
+		.ignore_pmdown_time = 1,
 	},
 
 	[DAI_LINK_SPDIF] = {
@@ -988,6 +1029,7 @@ static struct snd_soc_dai_link tegra_rt5639_dai[NUM_DAI_LINKS] = {
 		.cpu_dai_name = "dit-hifi",
 		.codec_dai_name = "rt5639-aif1",
 		.ops = &tegra_rt5639_voice_call_ops,
+		.ignore_pmdown_time = 1,
 	},
 	[DAI_LINK_BT_VOICE_CALL] = {
 		.name = "BT VOICE CALL",
@@ -997,11 +1039,79 @@ static struct snd_soc_dai_link tegra_rt5639_dai[NUM_DAI_LINKS] = {
 		.codec_dai_name = "dit-hifi",
 		.ops = &tegra_rt5639_bt_voice_call_ops,
 	},
+	[DAI_LINK_PCM_OFFLOAD_FE] = {
+		.name = "offload-pcm",
+		.stream_name = "offload-pcm",
+
+		.platform_name = "tegra-offload",
+		.cpu_dai_name = "tegra-offload-pcm",
+
+		.codec_dai_name =  "snd-soc-dummy-dai",
+		.codec_name = "snd-soc-dummy",
+
+		.dynamic = 1,
+	},
+	[DAI_LINK_COMPR_OFFLOAD_FE] = {
+		.name = "offload-compr",
+		.stream_name = "offload-compr",
+
+		.platform_name = "tegra-offload",
+		.cpu_dai_name = "tegra-offload-compr",
+
+		.codec_dai_name =  "snd-soc-dummy-dai",
+		.codec_name = "snd-soc-dummy",
+
+		.dynamic = 1,
+	},
+	[DAI_LINK_PCM_OFFLOAD_CAPTURE_FE] = {
+		.name = "offload-pcm-capture",
+		.stream_name = "offload-pcm-capture",
+
+		.platform_name = "tegra-offload",
+		.cpu_dai_name = "tegra-offload-pcm",
+
+		.codec_dai_name =  "snd-soc-dummy-dai",
+		.codec_name = "snd-soc-dummy",
+
+	},
+	[DAI_LINK_I2S_OFFLOAD_BE] = {
+		.name = "offload-audio-codec",
+		.stream_name = "offload-audio-pcm",
+		.codec_name = "rt5639.0-001a",
+		.platform_name = "tegra30-i2s.1",
+		.cpu_dai_name = "tegra30-i2s.1",
+		.codec_dai_name = "rt5639-aif1",
+		.ops = &tegra_rt5639_ops,
+		.ignore_pmdown_time = 1,
+
+		.no_pcm = 1,
+
+		.be_id = 0,
+		.be_hw_params_fixup = tegra_offload_hw_params_be_fixup,
+	},
 };
+
+static int tegra_rt5639_suspend_pre(struct snd_soc_card *card)
+{
+	struct tegra_rt5639 *machine = snd_soc_card_get_drvdata(card);
+	struct snd_soc_jack_gpio *gpio = &tegra_rt5639_hp_jack_gpio;
+	int i, suspend_allowed = 1;
+
+	for (i = 0; i < machine->pcard->num_links; i++) {
+		if (machine->pcard->dai_link[i].ignore_suspend) {
+			suspend_allowed = 0;
+			break;
+		}
+	}
+
+	/* If allowed, disable the irq so that device goes to suspend*/
+	if ((suspend_allowed) && (gpio_is_valid(gpio->gpio)))
+		disable_irq(gpio_to_irq(gpio->gpio));
+	return 0;
+}
 
 static int tegra_rt5639_suspend_post(struct snd_soc_card *card)
 {
-	struct snd_soc_jack_gpio *gpio = &tegra_rt5639_hp_jack_gpio;
 	struct tegra_rt5639 *machine = snd_soc_card_get_drvdata(card);
 	int i, suspend_allowed = 1;
 
@@ -1014,9 +1124,6 @@ static int tegra_rt5639_suspend_post(struct snd_soc_card *card)
 	}
 
 	if (suspend_allowed) {
-		/*Disable the irq so that device goes to suspend*/
-		if (gpio_is_valid(gpio->gpio))
-			disable_irq(gpio_to_irq(gpio->gpio));
 		/*This may be required if dapm setbias level is not called in
 		some cases, may be due to a wrong dapm map*/
 		if (machine->clock_enabled) {
@@ -1103,6 +1210,7 @@ static struct snd_soc_card snd_soc_tegra_rt5639 = {
 	.dai_link = tegra_rt5639_dai,
 	.num_links = ARRAY_SIZE(tegra_rt5639_dai),
 	.suspend_post = tegra_rt5639_suspend_post,
+	.suspend_pre = tegra_rt5639_suspend_pre,
 	.resume_pre = tegra_rt5639_resume_pre,
 	.set_bias_level = tegra_rt5639_set_bias_level,
 	.set_bias_level_post = tegra_rt5639_set_bias_level_post,
@@ -1178,11 +1286,18 @@ static int tegra_rt5639_driver_probe(struct platform_device *pdev)
 		return -EINVAL;
 	}
 
-	if (pdata->codec_name)
-		card->dai_link->codec_name = pdata->codec_name;
+	if (pdata->codec_name) {
+		card->dai_link[DAI_LINK_HIFI].codec_name = pdata->codec_name;
+		card->dai_link[DAI_LINK_I2S_OFFLOAD_BE].codec_name =
+			pdata->codec_name;
+	}
 
-	if (pdata->codec_dai_name)
-		card->dai_link->codec_dai_name = pdata->codec_dai_name;
+	if (pdata->codec_dai_name) {
+		card->dai_link[DAI_LINK_HIFI].codec_dai_name =
+			pdata->codec_dai_name;
+		card->dai_link[DAI_LINK_I2S_OFFLOAD_BE].codec_dai_name =
+			pdata->codec_dai_name;
+	}
 
 	machine = kzalloc(sizeof(struct tegra_rt5639), GFP_KERNEL);
 	if (!machine) {
@@ -1296,6 +1411,9 @@ static int tegra_rt5639_driver_probe(struct platform_device *pdev)
 	tegra_rt5639_i2s_dai_name[codec_id];
 	tegra_rt5639_dai[DAI_LINK_HIFI].platform_name =
 	tegra_rt5639_i2s_dai_name[codec_id];
+	tegra_rt5639_dai[DAI_LINK_I2S_OFFLOAD_BE].cpu_dai_name =
+	tegra_rt5639_i2s_dai_name[codec_id];
+
 
 	codec_id = pdata->i2s_param[BT_SCO].audio_port_id;
 	tegra_rt5639_dai[DAI_LINK_BTSCO].cpu_dai_name =
@@ -1362,7 +1480,7 @@ err_fini_utils:
 	if (machine->dmic_reg)
 		regulator_put(machine->dmic_reg);
 	if (machine->codec_reg) {
-		regulator_disable(machine->digital_reg);
+		regulator_disable(machine->codec_reg);
 		regulator_put(machine->codec_reg);
 	}
 

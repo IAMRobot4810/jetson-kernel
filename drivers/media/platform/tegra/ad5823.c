@@ -27,7 +27,10 @@
 #include <linux/of.h>
 #include <linux/of_device.h>
 #include <linux/of_gpio.h>
+
+#include "t124/t124.h"
 #include <media/ad5823.h>
+#include <media/camera.h>
 
 #define AD5823_ACTUATOR_RANGE	1023
 #define AD5823_POS_LOW_DEFAULT	(0)
@@ -49,6 +52,7 @@ struct ad5823_info {
 	struct ad5823_platform_data *pdata;
 	struct miscdevice miscdev;
 	struct regmap *regmap;
+	struct camera_sync_dev *csync_dev;
 };
 
 static int ad5823_set_position(struct ad5823_info *info, u32 position)
@@ -67,6 +71,21 @@ static int ad5823_set_position(struct ad5823_info *info, u32 position)
 			position = info->config.pos_actual_high;
 	}
 
+#ifdef TEGRA_12X_OR_HIGHER_CONFIG
+	ret = camera_dev_sync_clear(info->csync_dev);
+	ret |= camera_dev_sync_wr_add(info->csync_dev,
+			AD5823_VCM_MOVE_TIME,
+			AD5823_MOVE_TIME_VALUE);
+	ret |= camera_dev_sync_wr_add(info->csync_dev,
+			AD5823_MODE,
+			0);
+	ret |= camera_dev_sync_wr_add(info->csync_dev,
+			AD5823_VCM_CODE_MSB,
+			((position >> 8) & 0x3) | (1 << 2));
+	ret |= camera_dev_sync_wr_add(info->csync_dev,
+			AD5823_VCM_CODE_LSB,
+			position & 0xFF);
+#else
 	ret |= regmap_write(info->regmap, AD5823_VCM_MOVE_TIME,
 				AD5823_MOVE_TIME_VALUE);
 	ret |= regmap_write(info->regmap, AD5823_MODE, 0);
@@ -74,6 +93,7 @@ static int ad5823_set_position(struct ad5823_info *info, u32 position)
 		((position >> 8) & 0x3) | (1 << 2));
 	ret |= regmap_write(info->regmap, AD5823_VCM_CODE_LSB,
 		position & 0xFF);
+#endif
 
 	return ret;
 }
@@ -85,8 +105,8 @@ static long ad5823_ioctl(struct file *file,
 	struct ad5823_cal_data cal;
 	int err;
 
-	switch (cmd) {
-	case AD5823_IOCTL_GET_CONFIG:
+	switch (_IOC_NR(cmd)) {
+	case _IOC_NR(AD5823_IOCTL_GET_CONFIG):
 	{
 		if (copy_to_user((void __user *) arg,
 				 &info->config,
@@ -98,17 +118,15 @@ static long ad5823_ioctl(struct file *file,
 
 		break;
 	}
-	case AD5823_IOCTL_SET_POSITION:
+	case _IOC_NR(AD5823_IOCTL_SET_POSITION):
 		if (info->pdata->pwr_dev == AD5823_PWR_DEV_OFF
-				&& info->pdata->power_on)
+				&& info->pdata->power_on) {
 			info->pdata->power_on(info->pdata);
+		}
 		err = ad5823_set_position(info, (u32) arg);
-		if (info->pdata->pwr_dev == AD5823_PWR_DEV_OFF
-				&& info->pdata->power_off)
-			info->pdata->power_off(info->pdata);
 		return err;
 
-	case AD5823_IOCTL_SET_CAL_DATA:
+	case _IOC_NR(AD5823_IOCTL_SET_CAL_DATA):
 		if (copy_from_user(&cal, (const void __user *)arg,
 					sizeof(struct ad5823_cal_data))) {
 			dev_err(&info->i2c_client->dev,
@@ -120,7 +138,7 @@ static long ad5823_ioctl(struct file *file,
 		info->config.pos_working_high = cal.pos_high;
 		break;
 
-	case AD5823_IOCTL_SET_CONFIG:
+	case _IOC_NR(AD5823_IOCTL_SET_CONFIG):
 	{
 		if (info->config.pos_working_low != 0)
 			cal.pos_low = info->config.pos_working_low;
@@ -188,6 +206,9 @@ static const struct file_operations ad5823_fileops = {
 	.owner = THIS_MODULE,
 	.open = ad5823_open,
 	.unlocked_ioctl = ad5823_ioctl,
+#ifdef CONFIG_COMPAT
+	.compat_ioctl = ad5823_ioctl,
+#endif
 	.release = ad5823_release,
 };
 
@@ -262,13 +283,6 @@ static int ad5823_probe(struct i2c_client *client,
 		return -ENOMEM;
 	}
 
-	ad5823_device.parent = &client->dev;
-	err = misc_register(&ad5823_device);
-	if (err) {
-		dev_err(&client->dev, "ad5823: Unable to register misc device!\n");
-		goto ERROR_RET;
-	}
-
 	if (client->dev.of_node) {
 		info->pdata = ad5823_parse_dt(client);
 		if (IS_ERR(info->pdata)) {
@@ -290,13 +304,24 @@ static int ad5823_probe(struct i2c_client *client,
 	if (err)
 		goto ERROR_RET;
 
+	ad5823_device.parent = &client->dev;
+	err = misc_register(&ad5823_device);
+	if (err) {
+		dev_err(&client->dev, "ad5823: Unable to register misc device!\n");
+		goto ERROR_RET;
+	}
+
 	info->regulator = devm_regulator_get(&client->dev, "vdd");
-	if (IS_ERR_OR_NULL(info->regulator)) {
+	if (IS_ERR(info->regulator)) {
 		dev_err(&client->dev, "unable to get regulator %s\n",
 			dev_name(&client->dev));
 		info->regulator = NULL;
 	} else {
-		regulator_enable(info->regulator);
+		if (0 != regulator_enable(info->regulator)) {
+			dev_err(&client->dev,
+				"Failed to enable regulator.\n");
+			info->regulator = NULL;
+		}
 	}
 
 	info->regmap = devm_regmap_init_i2c(client, &ad5823_regmap_config);
@@ -306,6 +331,14 @@ static int ad5823_probe(struct i2c_client *client,
 			"Failed to allocate register map: %d\n", err);
 		goto ERROR_RET;
 	}
+
+#ifdef TEGRA_12X_OR_HIGHER_CONFIG
+	err = camera_dev_add_regmap(&info->csync_dev, "ad5823", info->regmap);
+	if (err < 0) {
+		dev_err(&client->dev, "%s unable i2c frame sync\n", __func__);
+		goto ERROR_RET;
+	}
+#endif
 
 	if (info->regulator)
 		regulator_disable(info->regulator);

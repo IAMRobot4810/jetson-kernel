@@ -7,7 +7,7 @@
  *	Colin Cross <ccross@google.com>
  *	Based on arch/arm/plat-omap/cpu-omap.c, (C) 2005 Nokia Corporation
  *
- * Copyright (C) 2010-2013 NVIDIA CORPORATION. All rights reserved.
+ * Copyright (C) 2010-2014 NVIDIA CORPORATION. All rights reserved.
  *
  * This software is licensed under the terms of the GNU General Public
  * License version 2, as published by the Free Software Foundation, and
@@ -47,6 +47,7 @@
 static struct cpufreq_frequency_table *freq_table;
 
 static struct clk *cpu_clk;
+static struct clk *emc_clk;
 
 static unsigned long policy_max_speed[CONFIG_NR_CPUS];
 static unsigned long target_cpu_speed[CONFIG_NR_CPUS];
@@ -180,14 +181,14 @@ static struct attribute_group stats_attr_grp = {
 
 #endif /* CONFIG_TEGRA_THERMAL_THROTTLE */
 
+static const struct tegra_edp_limits *cpu_reg_idle_limits;
+static unsigned int reg_mode;
+static bool reg_mode_force_normal;
+
 #ifdef CONFIG_TEGRA_EDP_LIMITS
 
 static const struct tegra_edp_limits *cpu_edp_limits;
 static int cpu_edp_limits_size;
-
-static const struct tegra_edp_limits *cpu_reg_idle_limits;
-static unsigned int reg_mode;
-static bool reg_mode_force_normal;
 
 static const unsigned int *system_edp_limits;
 static bool system_edp_alarm;
@@ -562,7 +563,6 @@ static int __init tegra_edp_debug_init(struct dentry *cpu_tegra_debugfs_root)
 #define tegra_cpu_edp_exit()
 #define tegra_edp_debug_init(cpu_tegra_debugfs_root) (0)
 #define cpu_reg_mode_predict_idle_limit() (0)
-static unsigned int reg_mode;
 #endif	/* CONFIG_TEGRA_EDP_LIMITS */
 
 #ifdef CONFIG_DEBUG_FS
@@ -649,6 +649,16 @@ int tegra_update_cpu_speed(unsigned long rate)
 			       " frequency %u kHz\n", freqs.new);
 			return ret;
 		}
+
+		if (emc_clk) {
+			ret = clk_set_rate(emc_clk,
+					   tegra_emc_cpu_limit(freqs.new));
+			if (ret) {
+				pr_err("cpu-tegra: Failed to scale emc for cpu"
+				       " frequency %u kHz\n", freqs.new);
+				return ret;
+			}
+		}
 	}
 
 	for_each_online_cpu(freqs.cpu)
@@ -669,8 +679,12 @@ int tegra_update_cpu_speed(unsigned long rate)
 	for_each_online_cpu(freqs.cpu)
 		cpufreq_notify_transition(&freqs, CPUFREQ_POSTCHANGE);
 
-	if (freqs.old > freqs.new)
+	if (freqs.old > freqs.new) {
+		if (emc_clk)
+			clk_set_rate(emc_clk, tegra_emc_cpu_limit(freqs.new));
 		tegra_update_mselect_rate(freqs.new);
+	}
+
 _out:
 	mode = REGULATOR_MODE_IDLE;
 	if ((mode_limit >= freqs.new) && (reg_mode != mode))
@@ -881,13 +895,21 @@ static int tegra_cpu_init(struct cpufreq_policy *policy)
 	if (IS_ERR(cpu_clk))
 		return PTR_ERR(cpu_clk);
 
+	emc_clk = clk_get_sys("tegra-cpu", "cpu_emc");
+	if (IS_ERR(emc_clk))
+		emc_clk = NULL;
+
+	freq = tegra_getspeed(policy->cpu);
+	if (emc_clk) {
+		clk_set_rate(emc_clk, tegra_emc_cpu_limit(freq));
+		clk_prepare_enable(emc_clk);
+	}
 	clk_prepare_enable(cpu_clk);
 
 	cpufreq_frequency_table_cpuinfo(policy, freq_table);
 	cpufreq_frequency_table_get_attr(freq_table, policy->cpu);
 
 	/* clip boot frequency to table entry */
-	freq = tegra_getspeed(policy->cpu);
 	ret = cpufreq_frequency_table_target(policy, freq_table, freq,
 		CPUFREQ_RELATION_H, &idx);
 	if (!ret && (freq != freq_table[idx].frequency)) {
@@ -909,6 +931,10 @@ static int tegra_cpu_init(struct cpufreq_policy *policy)
 static int tegra_cpu_exit(struct cpufreq_policy *policy)
 {
 	cpufreq_frequency_table_cpuinfo(policy, freq_table);
+	if (emc_clk) {
+		clk_disable_unprepare(emc_clk);
+		clk_put(emc_clk);
+	}
 	clk_put(cpu_clk);
 	return 0;
 }
@@ -1001,6 +1027,32 @@ static int __init tegra_cpufreq_init(void)
 
 	return cpufreq_register_driver(&tegra_cpufreq_driver);
 }
+
+#ifdef CONFIG_TEGRA_CPU_FREQ_GOVERNOR_KERNEL_START
+static int __init tegra_cpufreq_governor_init(void)
+{
+	/*
+	 * At this point, the full range of clocks should be available
+	 * Set the CPU governor to performance for a faster boot up
+	 */
+	unsigned int i;
+	struct cpufreq_policy *policy;
+	static char *start_scaling_gov = "performance";
+	for_each_online_cpu(i) {
+		policy = cpufreq_cpu_get(i);
+		if (!(policy && policy->governor &&
+			!(strcmp(policy->governor->name, start_scaling_gov) &&
+				cpufreq_set_gov(start_scaling_gov, i))))
+			pr_info("Failed to set the governor to %s for cpu %u\n",
+				start_scaling_gov, i);
+		if (policy)
+			cpufreq_cpu_put(policy);
+	}
+	return 0;
+}
+
+late_initcall_sync(tegra_cpufreq_governor_init);
+#endif
 
 static void __exit tegra_cpufreq_exit(void)
 {

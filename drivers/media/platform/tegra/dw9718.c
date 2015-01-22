@@ -1,7 +1,7 @@
 /*
  * dw9718.c - dw9718 focuser driver
  *
- * Copyright (c) 2013, NVIDIA Corporation. All Rights Reserved.
+ * Copyright (c) 2013-2014, NVIDIA Corporation. All Rights Reserved.
  *
  * This program is free software; you can redistribute it and/or modify it
  * under the terms and conditions of the GNU General Public License,
@@ -87,11 +87,15 @@
 #include <linux/slab.h>
 #include <linux/delay.h>
 #include <linux/uaccess.h>
+#include <linux/regmap.h>
 #include <linux/list.h>
 #include <linux/regulator/consumer.h>
 #include <linux/gpio.h>
 #include <linux/module.h>
+
+#include "t124/t124.h"
 #include <media/dw9718.h>
+#include <media/camera.h>
 
 #define ENABLE_DEBUGFS_INTERFACE
 
@@ -113,6 +117,8 @@
 
 struct dw9718_info {
 	struct i2c_client *i2c_client;
+	struct regmap *regmap;
+	struct camera_sync_dev *csync_dev;
 	struct dw9718_platform_data *pdata;
 	struct miscdevice miscdev;
 	struct list_head list;
@@ -173,6 +179,7 @@ static int dw9718_i2c_wr8(struct dw9718_info *info, u8 reg, u8 val)
 	return 0;
 }
 
+#ifndef TEGRA_12X_OR_HIGHER_CONFIG
 static int dw9718_i2c_wr16(struct dw9718_info *info, u8 reg, u16 val)
 {
 	struct i2c_msg msg;
@@ -188,6 +195,7 @@ static int dw9718_i2c_wr16(struct dw9718_info *info, u8 reg, u16 val)
 		return -EIO;
 	return 0;
 }
+#endif
 
 static int dw9718_i2c_rd8(struct dw9718_info *info, u8 reg, u8 *val)
 {
@@ -218,12 +226,19 @@ static int dw9718_position_wr(struct dw9718_info *info, s32 position)
 
 	dev_dbg(&info->i2c_client->dev, "%s %d\n", __func__, position);
 	position &= dw9718_POS_CLAMP;
+#ifdef TEGRA_12X_OR_HIGHER_CONFIG
+	err = camera_dev_sync_clear(info->csync_dev);
+	err = camera_dev_sync_wr_add(info->csync_dev,
+				DW9718_VCM_CODE_MSB, position);
+	info->cur_pos = position;
+#else
 	err = dw9718_i2c_wr16(info, DW9718_VCM_CODE_MSB, position);
 	if (!err)
 		info->cur_pos = position;
 	else
 		dev_err(&info->i2c_client->dev, "%s: ERROR set position %d",
 			__func__, position);
+#endif
 	return err;
 }
 
@@ -316,8 +331,12 @@ static int dw9718_power_put(struct dw9718_power_rail *pw)
 	if (likely(pw->vdd_i2c))
 		regulator_put(pw->vdd_i2c);
 
+	if (likely(pw->vana))
+		regulator_put(pw->vana);
+
 	pw->vdd = NULL;
 	pw->vdd_i2c = NULL;
+	pw->vana = NULL;
 
 	return 0;
 }
@@ -348,6 +367,7 @@ static int dw9718_power_get(struct dw9718_info *info)
 
 	dw9718_regulator_get(info, &pw->vdd, "vdd");
 	dw9718_regulator_get(info, &pw->vdd_i2c, "vdd_i2c");
+	dw9718_regulator_get(info, &pw->vana, "vana");
 
 	return 0;
 }
@@ -418,7 +438,7 @@ static int dw9718_set_focuser_capabilities(struct dw9718_info *info,
 {
 	dev_dbg(&info->i2c_client->dev, "%s\n", __func__);
 	if (copy_from_user(&info->nv_config,
-		(const void __user *)params->p_value,
+		MAKE_CONSTUSER_PTR(params->p_value),
 		sizeof(struct nv_focuser_config))) {
 			dev_err(&info->i2c_client->dev,
 			"%s Error: copy_from_user bytes %d\n",
@@ -447,9 +467,15 @@ static int dw9718_param_rd(struct dw9718_info *info, unsigned long arg)
 	u32 data_size = 0;
 
 	dev_dbg(&info->i2c_client->dev, "%s %lx\n", __func__, arg);
+#ifdef CONFIG_COMPAT
+	memset(&params, 0, sizeof(params));
+	if (copy_from_user(&params, (const void __user *)arg,
+		sizeof(struct nvc_param_32))) {
+#else
 	if (copy_from_user(&params,
 		(const void __user *)arg,
 		sizeof(struct nvc_param))) {
+#endif
 		dev_err(&info->i2c_client->dev, "%s %d copy_from_user err\n",
 			__func__, __LINE__);
 		return -EFAULT;
@@ -510,7 +536,7 @@ static int dw9718_param_rd(struct dw9718_info *info, unsigned long arg)
 			__func__, params.sizeofvalue, data_size, params.param);
 		return -EINVAL;
 	}
-	if (copy_to_user((void __user *)params.p_value, data_ptr, data_size)) {
+	if (copy_to_user(MAKE_USER_PTR(params.p_value), data_ptr, data_size)) {
 		dev_err(&info->i2c_client->dev, "%s copy_to_user err line %d\n",
 			__func__, __LINE__);
 		return -EFAULT;
@@ -555,15 +581,21 @@ static int dw9718_param_wr(struct dw9718_info *info, unsigned long arg)
 	u8 u8val;
 	s32 s32val;
 	int err = 0;
+#ifdef CONFIG_COMPAT
+	memset(&params, 0, sizeof(params));
+	if (copy_from_user(&params, (const void __user *)arg,
+		sizeof(struct nvc_param_32))) {
+#else
 	if (copy_from_user(&params, (const void __user *)arg,
 		sizeof(struct nvc_param))) {
+#endif
 		dev_err(&info->i2c_client->dev,
 			"%s copy_from_user err line %d\n",
 			__func__, __LINE__);
 		return -EFAULT;
 	}
 	if (copy_from_user(&s32val,
-		(const void __user *)params.p_value, sizeof(s32val))) {
+		MAKE_CONSTUSER_PTR(params.p_value), sizeof(s32val))) {
 		dev_err(&info->i2c_client->dev, "%s %d copy_from_user err\n",
 			__func__, __LINE__);
 		return -EFAULT;
@@ -668,9 +700,16 @@ static long dw9718_ioctl(struct file *file,
 	int err = 0;
 	switch (cmd) {
 	case NVC_IOCTL_PARAM_WR:
+#ifdef CONFIG_COMPAT
+	case NVC_IOCTL_32_PARAM_WR:
+#endif
+		dw9718_pm_dev_wr(info, NVC_PWR_ON);
 		err = dw9718_param_wr(info, arg);
 		return err;
 	case NVC_IOCTL_PARAM_RD:
+#ifdef CONFIG_COMPAT
+	case NVC_IOCTL_32_PARAM_RD:
+#endif
 		err = dw9718_param_rd(info, arg);
 		return err;
 	case NVC_IOCTL_PWR_WR:
@@ -836,6 +875,9 @@ static const struct file_operations dw9718_fileops = {
 	.owner = THIS_MODULE,
 	.open = dw9718_open,
 	.unlocked_ioctl = dw9718_ioctl,
+#ifdef CONFIG_COMPAT
+	.compat_ioctl = dw9718_ioctl,
+#endif
 	.release = dw9718_release,
 };
 
@@ -871,6 +913,11 @@ static int dw9718_probe(
 {
 	struct dw9718_info *info;
 	int err;
+	static struct regmap_config dw9718_regmap_config = {
+		.reg_bits = 8,
+		.val_bits = 16,
+	};
+
 	dev_dbg(&client->dev, "%s\n", __func__);
 	pr_info("dw9718: probing focuser.\n");
 
@@ -886,6 +933,15 @@ static int dw9718_probe(
 		info->pdata = &dw9718_default_pdata;
 		dev_dbg(&client->dev, "%s No platform data.  Using defaults.\n",
 			__func__);
+	}
+
+	info->regmap = devm_regmap_init_i2c(client, &dw9718_regmap_config);
+	if (IS_ERR(info->regmap)) {
+		err = PTR_ERR(info->regmap);
+		dev_err(&client->dev,
+			"Failed to allocate register map: %d\n", err);
+		dw9718_del(info);
+		return -EIO;
 	}
 
 	i2c_set_clientdata(client, info);
@@ -937,6 +993,15 @@ static int dw9718_probe(
 		dw9718_del(info);
 		return -ENODEV;
 	}
+
+#ifdef TEGRA_12X_OR_HIGHER_CONFIG
+	err = camera_dev_add_regmap(&info->csync_dev, "dw9718", info->regmap);
+	if (err < 0) {
+		dev_err(&client->dev, "%s unable i2c frame sync\n", __func__);
+		dw9718_del(info);
+		return -ENODEV;
+	}
+#endif
 
 	nvc_debugfs_init(
 		info->miscdev.this_device->kobj.name, NULL, NULL, info);

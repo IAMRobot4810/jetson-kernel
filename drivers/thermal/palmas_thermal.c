@@ -1,7 +1,7 @@
 /*
  * palmas_thermal.c -- TI PALMAS THERMAL.
  *
- * Copyright (c) 2013, NVIDIA Corporation. All rights reserved.
+ * Copyright (c) 2013-2014, NVIDIA Corporation. All rights reserved.
  *
  * Author: Pradeep Goudagunta <pgoudagunta@nvidia.com>
  *
@@ -28,6 +28,8 @@
 #include <linux/delay.h>
 #include <linux/pm.h>
 #include <linux/thermal.h>
+#include <linux/platform_data/thermal_sensors.h>
+#include <linux/of.h>
 #include <linux/mfd/palmas.h>
 
 #define PALMAS_NORMAL_OPERATING_TEMP 100000
@@ -38,43 +40,39 @@ struct palmas_therm_zone {
 	struct palmas			*palmas;
 	struct thermal_zone_device	*tz_device;
 	int				irq;
-	int				is_crit_temp;
+	long				hd_threshold_temp;
+	const char			*tz_name;
 };
 
-struct palmas_trip_point {
-	unsigned long temp;
-	 enum thermal_trip_type type;
+static struct thermal_trip_info palmas_tpoint = {
+	.cdev_type = "emergency-balanced",
+	.trip_temp = PALMAS_CRITICAL_DEFUALT_TEMP,
+	.trip_type = THERMAL_TRIP_ACTIVE,
+	.upper = THERMAL_NO_LIMIT,
+	.lower = THERMAL_NO_LIMIT,
 };
-
-static struct palmas_trip_point palmas_tpoint = {
-		.temp = PALMAS_CRITICAL_DEFUALT_TEMP,
-		.type = THERMAL_TRIP_CRITICAL,
-};
-
-static int palmas_thermal_get_crit_temp(struct thermal_zone_device *tz_device,
-			unsigned long *temp)
-{
-	*temp = palmas_tpoint.temp;
-
-	return 0;
-}
 
 static int palmas_thermal_get_temp(struct thermal_zone_device *tz_device,
-			unsigned long *temp)
+			long *temp)
 {
+	int ret;
+	unsigned int val;
 	struct palmas_therm_zone *ptherm_zone = tz_device->devdata;
 
-	if (ptherm_zone->is_crit_temp) {
-		/*
-		 * Set temperature greater than Critical trip
-		 * temp to trigger orderly power down sequence
-		 */
-		palmas_thermal_get_crit_temp(tz_device, temp);
-		*temp += 1;
-		return 0;
+	ret = palmas_read(ptherm_zone->palmas, PALMAS_INTERRUPT_BASE,
+				PALMAS_INT1_LINE_STATE, &val);
+	if (ret < 0) {
+		dev_err(ptherm_zone->dev,
+			"%s: Failed to read INT1_LINE_STATE, %d\n",
+			__func__, ret);
+		return -EINVAL;
 	}
 
-	*temp = PALMAS_NORMAL_OPERATING_TEMP;
+	if (val & PALMAS_INT1_STATUS_HOTDIE)
+		*temp = palmas_tpoint.trip_temp + 1; /* + 1 to trigger cdev */
+	else
+		*temp = PALMAS_NORMAL_OPERATING_TEMP;
+
 	return 0;
 }
 
@@ -84,69 +82,85 @@ static int palmas_thermal_get_trip_type(struct thermal_zone_device *tz_device,
 	if (trip >= 1)
 		return -EINVAL;
 
-	*type = palmas_tpoint.type;
+	*type = palmas_tpoint.trip_type;
 	return 0;
 }
 
 static int palmas_thermal_get_trip_temp(struct thermal_zone_device *tz_device,
-			int trip, unsigned long *temp)
+			int trip, long *temp)
 {
 	if (trip >= 1)
 		return -EINVAL;
 
-	*temp = palmas_tpoint.temp;
+	*temp = palmas_tpoint.trip_temp;
+	return 0;
+}
+
+static int palmas_thermal_bind(struct thermal_zone_device *thz,
+				struct thermal_cooling_device *cdev)
+{
+	if (!strncmp(palmas_tpoint.cdev_type, cdev->type, THERMAL_NAME_LENGTH))
+		thermal_zone_bind_cooling_device(
+			thz, 0, cdev, palmas_tpoint.upper, palmas_tpoint.lower);
+	return 0;
+}
+
+static int palmas_thermal_unbind(struct thermal_zone_device *thz,
+				struct thermal_cooling_device *cdev)
+{
+	if (!strncmp(palmas_tpoint.cdev_type, cdev->type, THERMAL_NAME_LENGTH))
+		thermal_zone_unbind_cooling_device(thz, 0, cdev);
 	return 0;
 }
 
 static struct thermal_zone_device_ops palmas_tz_ops = {
 	.get_temp = palmas_thermal_get_temp,
-	.get_crit_temp = palmas_thermal_get_crit_temp,
 	.get_trip_type = palmas_thermal_get_trip_type,
 	.get_trip_temp = palmas_thermal_get_trip_temp,
+	.bind = palmas_thermal_bind,
+	.unbind = palmas_thermal_unbind,
 };
 
 static irqreturn_t palmas_thermal_irq(int irq, void *data)
 {
 	struct palmas_therm_zone *ptherm_zone = data;
-	unsigned int val;
-	int ret;
 
-	/*
-	 * Necessary action can be taken here
-	 * e.g: thermal_zone_device_update(pz->tz_device);
-	 * will trigger orderly power down sequence.
-	 */
-	ret = palmas_read(ptherm_zone->palmas, PALMAS_INTERRUPT_BASE,
-			PALMAS_INT1_LINE_STATE, &val);
-	if (ret < 0) {
-		dev_err(ptherm_zone->dev,
-			"%s: Failed to read INT1_LINE_STATE, %d\n",
-			__func__, ret);
-	} else {
-		ptherm_zone->is_crit_temp =
-				val & PALMAS_INT1_STATUS_HOTDIE ? 1 : 0;
-		dev_info(ptherm_zone->dev, "%s: HOTDIE line is equal to %d\n",
-			__func__, ptherm_zone->is_crit_temp);
-	}
-
+	thermal_zone_device_update(ptherm_zone->tz_device);
 	return IRQ_HANDLED;
 }
 
 static int palmas_thermal_probe(struct platform_device *pdev)
 {
-	struct palmas_therm_zone *ptherm_zone;
-	struct palmas_platform_data *pdata;
 	struct palmas *palmas = dev_get_drvdata(pdev->dev.parent);
-	char *default_tz_name = "palmas-junc-tz";
+	struct palmas_platform_data *pdata;
+	struct palmas_therm_zone *ptherm_zone;
+	struct device_node *np = pdev->dev.of_node;
+	const char *tz_name = NULL;
+	u32 hd_threshold_temp = 0;
+	u32 pval;
 	int ret;
 	u8 val;
 
 	pdata = dev_get_platdata(pdev->dev.parent);
-
-	if (!pdata || !(pdata->hd_threshold_temp)) {
-		dev_err(&pdev->dev, "No platform data\n");
-		return -ENODEV;
+	if (pdata) {
+		tz_name = pdata->tz_name;
+		hd_threshold_temp = pdata->hd_threshold_temp;
+	} else {
+		if (np) {
+			tz_name = of_get_property(np, "ti,tz-name", NULL);
+			ret = of_property_read_u32(np,
+					"ti,hot-die-threshold-temp", &pval);
+			if (!ret)
+				hd_threshold_temp = pval;
+		}
 	}
+	if (!hd_threshold_temp) {
+		dev_err(&pdev->dev, "Hot die temp is not provided\n");
+		return -EINVAL;
+	}
+
+	if (!tz_name)
+		tz_name = "palmas-die-thermal";
 
 	ptherm_zone = devm_kzalloc(&pdev->dev, sizeof(*ptherm_zone),
 			GFP_KERNEL);
@@ -158,10 +172,10 @@ static int palmas_thermal_probe(struct platform_device *pdev)
 	platform_set_drvdata(pdev, ptherm_zone);
 	ptherm_zone->dev = &pdev->dev;
 	ptherm_zone->palmas = palmas;
-	if (!(pdata->tz_name))
-		pdata->tz_name = default_tz_name;
+	ptherm_zone->hd_threshold_temp = (long)hd_threshold_temp;
+	ptherm_zone->tz_name = tz_name;
 
-	ptherm_zone->tz_device = thermal_zone_device_register(pdata->tz_name,
+	ptherm_zone->tz_device = thermal_zone_device_register(tz_name,
 					1, 0, ptherm_zone, &palmas_tz_ops,
 					NULL, 0, 0);
 	if (IS_ERR_OR_NULL(ptherm_zone->tz_device)) {
@@ -170,7 +184,7 @@ static int palmas_thermal_probe(struct platform_device *pdev)
 		return PTR_ERR(ptherm_zone->tz_device);
 	}
 
-	palmas_tpoint.temp = pdata->hd_threshold_temp;
+	palmas_tpoint.trip_temp = ptherm_zone->hd_threshold_temp;
 
 	ptherm_zone->irq = platform_get_irq(pdev, 0);
 	ret = request_threaded_irq(ptherm_zone->irq, NULL,
@@ -183,25 +197,16 @@ static int palmas_thermal_probe(struct platform_device *pdev)
 		goto int_req_failed;
 	}
 
-	switch (palmas_tpoint.temp) {
-	case 108000:
+	if (palmas_tpoint.trip_temp <= 108000UL)
 		val = 0;
-		break;
-	case 112000:
+	else if (palmas_tpoint.trip_temp <= 112000UL)
 		val = 1;
-		break;
-	case 116000:
+	else if (palmas_tpoint.trip_temp <= 116000UL)
 		val = 2;
-		break;
-	case 120000:
+	else if (palmas_tpoint.trip_temp <= 120000UL)
 		val = 3;
-		break;
-	default:
-		dev_err(&pdev->dev, "%ld threshold is not supported",
-				palmas_tpoint.temp);
-		ret = -EINVAL;
-		goto error;
-	}
+	else
+		val = 3;
 
 	val <<= PALMAS_OSC_THERM_CTRL_THERM_HD_SEL_SHIFT;
 	ret = palmas_update_bits(palmas, PALMAS_PMU_CONTROL_BASE,
@@ -225,11 +230,16 @@ static int palmas_thermal_remove(struct platform_device *pdev)
 {
 	struct palmas_therm_zone *ptherm_zone = platform_get_drvdata(pdev);
 
-	thermal_zone_device_unregister(ptherm_zone->tz_device);
 	free_irq(ptherm_zone->irq, ptherm_zone);
-	kfree(ptherm_zone);
+	thermal_zone_device_unregister(ptherm_zone->tz_device);
 	return 0;
 }
+
+static const struct of_device_id palmas_thermal_match[] = {
+	{ .compatible = "ti,palmas-thermal", },
+	{ },
+};
+MODULE_DEVICE_TABLE(of, palmas_thermal_match);
 
 static struct platform_driver palmas_thermal_driver = {
 	.probe = palmas_thermal_probe,
@@ -237,20 +247,11 @@ static struct platform_driver palmas_thermal_driver = {
 	.driver = {
 		.name = "palmas-thermal",
 		.owner = THIS_MODULE,
+		.of_match_table = palmas_thermal_match,
 	},
 };
 
-static int __init palmas_thermal_init(void)
-{
-	return platform_driver_register(&palmas_thermal_driver);
-}
-module_init(palmas_thermal_init);
-
-static void __exit palmas_thermal_exit(void)
-{
-	platform_driver_unregister(&palmas_thermal_driver);
-}
-module_exit(palmas_thermal_exit);
+module_platform_driver(palmas_thermal_driver);
 
 MODULE_DESCRIPTION("Palmas Thermal driver");
 MODULE_AUTHOR("Pradeep Goudagunta<pgoudagunta@nvidia.com>");

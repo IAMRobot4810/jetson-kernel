@@ -1,22 +1,21 @@
 /*
- * Copyright (c) 2013, NVIDIA CORPORATION. All rights reserved.
+ * Copyright (c) 2013-2014, NVIDIA CORPORATION. All rights reserved.
  *
- * this program is free software; you can redistribute it and/or modify
- * it under the terms of the gnu general public license as published by
- * the free software foundation; either version 2 of the license, or
- * (at your option) any later version.
+ * This program is free software; you can redistribute it and/or modify it
+ * under the terms and conditions of the GNU General Public License,
+ * version 2, as published by the Free Software Foundation.
  *
- * this program is distributed in the hope that it will be useful, but without
- * any warranty; without even the implied warranty of merchantability or
- * fitness for a particular purpose.  see the gnu general public license for
+ * This program is distributed in the hope it will be useful, but WITHOUT
+ * ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or
+ * FITNESS FOR A PARTICULAR PURPOSE.  See the GNU General Public License for
  * more details.
  *
- * you should have received a copy of the gnu general public license along
- * with this program; if not, write to the free software foundation, inc.,
- * 51 franklin street, fifth floor, boston, ma  02110-1301, usa.
+ * You should have received a copy of the GNU General Public License
+ * along with this program.  If not, see <http://www.gnu.org/licenses/>.
  */
 
 #include <linux/tegra-soc.h>
+#include "fuse.h"
 
 #ifndef __TEGRA12x_FUSE_OFFSETS_H
 #define __TEGRA12x_FUSE_OFFSETS_H
@@ -27,7 +26,7 @@
 
 /* arm_debug_dis */
 #define JTAG_START_OFFSET		0x0
-#define JTAG_START_BIT			3
+#define JTAG_START_BIT			12
 
 /* security_mode */
 #define ODM_PROD_START_OFFSET		0x0
@@ -73,6 +72,12 @@
 #define ODM_RESERVED_DEVSEL_START_OFFSET	0x2E
 #define ODM_RESERVED_START_BIT			5
 
+/* AID */
+#ifdef CONFIG_AID_FUSE
+#define AID_START_OFFSET			0x72
+#define AID_START_BIT				0
+#endif
+
 #define FUSE_VENDOR_CODE	0x200
 #define FUSE_VENDOR_CODE_MASK	0xf
 #define FUSE_FAB_CODE		0x204
@@ -115,55 +120,79 @@
 
 #define PGM_TIME_US 12
 
-#define CHK_ERR(x) \
-{ \
-	if (x) { \
-		pr_err("%s: sysfs_create_file fail(%d)!", __func__, x); \
-		return x; \
-	} \
-}
-
 DEVICE_ATTR(public_key, 0440, tegra_fuse_show, tegra_fuse_store);
 DEVICE_ATTR(pkc_disable, 0440, tegra_fuse_show, tegra_fuse_store);
 DEVICE_ATTR(vp8_enable, 0440, tegra_fuse_show, tegra_fuse_store);
 DEVICE_ATTR(odm_lock, 0440, tegra_fuse_show, tegra_fuse_store);
 
 /*
- * Check CP fuse revision.
- *  ERROR:    -ve:	Negative return value
- *  CP/FT:	1:	Old style CP/FT fuse
- *  CP1/CP2:	0:	New style CP1/CP2 fuse (default)
+ * Check CP fuse revision. Return value (depending on chip) is as below:
+ *   Any: ERROR:      -ve:	Negative return value
+ *  T12x: CP/FT:	1:	T124: Old style CP/FT fuse
+ *  T12x: CP1/CP2:	0:	T124: New style CP1/CP2 fuse (default)
+ *
+ *  T13x: Old pattern:	2:	T132: Old ATE CP1/CP2 fuse (rev upto 0.8)
+ *  T13x: Mid pattern:	1:	T132: Mid ATE CP1/CP2 fuse (rev 0.9 - 0.11)
+ *  T13x: New pattern:	0:	T132: New ATE CP1/CP2 fuse (rev 0.12 onwards)
  */
 static inline int fuse_cp_rev_check(void)
 {
+	static enum tegra_chipid chip_id;
 	u32 rev, rev_major, rev_minor;
 
 	rev = tegra_fuse_readl(FUSE_CP_REV);
 	rev_minor = rev & 0x1f;
 	rev_major = (rev >> 5) & 0x3f;
+	pr_debug("%s: CP rev %d.%d\n", __func__, rev_major, rev_minor);
 
-	/* CP rev < 00.4 is unsupported */
-	if ((rev_major == 0) && (rev_minor < 4))
-		return -EINVAL;
+	if (!chip_id)
+		chip_id = tegra_get_chipid();
 
-	/* CP rev < 00.8 is CP/FT (old style) */
-	if ((rev_major == 0) && (rev_minor < 8))
-		return 1;
+	/* T13x: all CP rev are valid */
+	if (chip_id == TEGRA_CHIPID_TEGRA13) {
+		/* CP rev <= 00.8 is old ATE pattern */
+		if ((rev_major == 0) && (rev_minor <= 8))
+			return 2;
+		/* CP 00.8 > rev >= 00.11 is mid ATE pattern */
+		if ((rev_major == 0) && (rev_minor <= 11))
+			return 1;
+		return 0; /* default new ATE pattern */
+	}
 
-	return 0;
+	if (chip_id == TEGRA_CHIPID_TEGRA12) {
+		/* CP rev < 00.4 is unsupported */
+		if ((rev_major == 0) && (rev_minor < 4))
+			return -EINVAL;
+		/* CP rev < 00.8 is CP/FT (old style) */
+		if ((rev_major == 0) && (rev_minor < 8))
+			return 1;
+		return 0; /* default new CP1/CP2 fuse */
+	}
+
+	return -EINVAL;
 }
 
 /*
  * Check FT fuse revision.
  * We check CP-rev and if it shows NEW style, we return ERROR.
  *  ERROR:    -ve:	Negative return value
- *  CP/FT:	0:	Old style CP/FT fuse (default)
+ *  CP/FT:	0:	Old style CP/FT fuse (default for t12x)
+ *  T13x:	1:	CP1/CP2 new ATE pattern (default for t13x)
  */
 static inline int fuse_ft_rev_check(void)
 {
+	static enum tegra_chipid chip_id;
 	u32 rev, rev_major, rev_minor;
 	int check_cp = fuse_cp_rev_check();
 
+	if (!chip_id)
+		chip_id = tegra_get_chipid();
+
+	/* T13x does not use FT */
+	if (chip_id == TEGRA_CHIPID_TEGRA13)
+		return 1;
+
+	/* T12x */
 	if (check_cp < 0)
 		return check_cp;
 	if (check_cp == 0)
@@ -172,6 +201,7 @@ static inline int fuse_ft_rev_check(void)
 	rev = tegra_fuse_readl(FUSE_FT_REV);
 	rev_minor = rev & 0x1f;
 	rev_major = (rev >> 5) & 0x3f;
+	pr_debug("%s: FT rev %d.%d\n", __func__, rev_major, rev_minor);
 
 	/* FT rev < 00.5 is unsupported */
 	if ((rev_major == 0) && (rev_minor < 5))
@@ -320,8 +350,8 @@ int tegra_fuse_calib_base_get_cp(u32 *base_cp, s32 *shifted_cp)
 
 	if (base_cp)
 		*base_cp = (((val) & (FUSE_BASE_CP_MASK
-				<< FUSE_BASE_CP_SHIFT))
-				>> FUSE_BASE_CP_SHIFT);
+					<< FUSE_BASE_CP_SHIFT))
+					>> FUSE_BASE_CP_SHIFT);
 
 	val = tegra_fuse_readl(FUSE_SPARE_REALIGNMENT_REG_0);
 	cp = (((val) & (FUSE_SHIFT_CP_MASK
@@ -353,7 +383,7 @@ int tegra_fuse_calib_base_get_ft(u32 *base_ft, s32 *shifted_ft)
 	if (check_cp < 0)
 		return check_cp;
 	/* when check_cp is 1, check_ft must be valid */
-	if (check_cp != 0 && check_ft != 0)
+	if (check_cp != 0 && check_ft < 0)
 		return -EINVAL;
 
 	val = tegra_fuse_readl(FUSE_TSENSOR_CALIB_8);
@@ -362,8 +392,8 @@ int tegra_fuse_calib_base_get_ft(u32 *base_ft, s32 *shifted_ft)
 
 	if (base_ft)
 		*base_ft = (((val) & (FUSE_BASE_FT_MASK
-				<< FUSE_BASE_FT_SHIFT))
-				>> FUSE_BASE_FT_SHIFT);
+					<< FUSE_BASE_FT_SHIFT))
+					>> FUSE_BASE_FT_SHIFT);
 
 	ft_or_cp2 = (((val) & (FUSE_SHIFT_FT_MASK
 				<< FUSE_SHIFT_FT_SHIFT))
@@ -390,10 +420,14 @@ int tegra_fuse_add_sysfs_variables(struct platform_device *pdev,
 		dev_attr_pkc_disable.attr.mode = 0640;
 		dev_attr_vp8_enable.attr.mode = 0640;
 	}
-	CHK_ERR(sysfs_create_file(&pdev->dev.kobj, &dev_attr_public_key.attr));
-	CHK_ERR(sysfs_create_file(&pdev->dev.kobj, &dev_attr_pkc_disable.attr));
-	CHK_ERR(sysfs_create_file(&pdev->dev.kobj, &dev_attr_vp8_enable.attr));
-	CHK_ERR(sysfs_create_file(&pdev->dev.kobj, &dev_attr_odm_lock.attr));
+	CHK_ERR(&pdev->dev, sysfs_create_file(&pdev->dev.kobj,
+				&dev_attr_public_key.attr));
+	CHK_ERR(&pdev->dev, sysfs_create_file(&pdev->dev.kobj,
+				&dev_attr_pkc_disable.attr));
+	CHK_ERR(&pdev->dev, sysfs_create_file(&pdev->dev.kobj,
+				&dev_attr_vp8_enable.attr));
+	CHK_ERR(&pdev->dev, sysfs_create_file(&pdev->dev.kobj,
+				&dev_attr_odm_lock.attr));
 
 	return 0;
 }
@@ -408,11 +442,14 @@ int tegra_fuse_rm_sysfs_variables(struct platform_device *pdev)
 	return 0;
 }
 
-int tegra_fuse_ch_sysfs_perm(struct kobject *kobj)
+int tegra_fuse_ch_sysfs_perm(struct device *dev, struct kobject *kobj)
 {
-	CHK_ERR(sysfs_chmod_file(kobj, &dev_attr_public_key.attr, 0440));
-	CHK_ERR(sysfs_chmod_file(kobj, &dev_attr_pkc_disable.attr, 0440));
-	CHK_ERR(sysfs_chmod_file(kobj, &dev_attr_vp8_enable.attr, 0440));
+	CHK_ERR(dev, sysfs_chmod_file(kobj,
+				&dev_attr_public_key.attr, 0440));
+	CHK_ERR(dev, sysfs_chmod_file(kobj,
+				&dev_attr_pkc_disable.attr, 0440));
+	CHK_ERR(dev, sysfs_chmod_file(kobj,
+				&dev_attr_vp8_enable.attr, 0440));
 
 	return 0;
 }

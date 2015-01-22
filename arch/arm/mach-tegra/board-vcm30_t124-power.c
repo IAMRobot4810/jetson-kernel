@@ -1,7 +1,7 @@
 /*
  * arch/arm/mach-tegra/board-vcm30_t124-power.c
  *
- * Copyright (c) 2013, NVIDIA CORPORATION.  All rights reserved.
+ * Copyright (c) 2013-2014, NVIDIA CORPORATION.  All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify it
  * under the terms and conditions of the GNU General Public License,
@@ -22,8 +22,7 @@
 #include <linux/regulator/max15569-regulator.h>
 #include <linux/gpio.h>
 #include <linux/i2c/pca953x.h>
-
-#include <mach/edp.h>
+#include <linux/tegra-pmc.h>
 
 #include "pm.h"
 #include "board.h"
@@ -33,7 +32,7 @@
 #include "tegra_cl_dvfs.h"
 #include "devices.h"
 #include "tegra11_soctherm.h"
-#include "tegra3_tsensor.h"
+#include <mach/board_id.h>
 
 #define PMC_CTRL		0x0
 #define PMC_CTRL_INTR_LOW	(1 << 17)
@@ -135,8 +134,44 @@ static struct i2c_board_info __initdata max77663_regulators[] = {
 	{
 		/* The I2C address was determined by OTP factory setting */
 		I2C_BOARD_INFO("max77663", 0x3c),
-		.irq		= INT_EXTERNAL_PMU,
+		.irq		= -1,
 		.platform_data	= &max77663_pdata,
+	},
+};
+
+/* MAX15569 switching regulator for vdd_cpu */
+static struct regulator_consumer_supply max15569_vddcpu_supply[] = {
+	REGULATOR_SUPPLY("vdd_cpu", NULL),
+};
+
+static struct regulator_init_data max15569_vddcpu_init_data = {
+	.constraints = {
+		.min_uV = 500000,
+		.max_uV = 1520000,
+		.valid_modes_mask = (REGULATOR_MODE_NORMAL |
+				REGULATOR_MODE_STANDBY),
+		.valid_ops_mask = (REGULATOR_CHANGE_MODE |
+				REGULATOR_CHANGE_STATUS |
+				REGULATOR_CHANGE_CONTROL |
+				REGULATOR_CHANGE_VOLTAGE),
+		.always_on = 1,
+		.boot_on =  1,
+		.apply_uV = 0,
+	},
+	.num_consumer_supplies = ARRAY_SIZE(max15569_vddcpu_supply),
+	.consumer_supplies = max15569_vddcpu_supply,
+};
+
+static struct max15569_regulator_platform_data max15569_vddcpu_pdata = {
+	.reg_init_data = &max15569_vddcpu_init_data,
+	.max_voltage_uV = 1520000,
+	.slew_rate_mv_per_us = 44,
+};
+
+static struct i2c_board_info __initdata max15569_vddcpu_boardinfo[] = {
+	{
+		I2C_BOARD_INFO("max15569", 0x3a),
+		.platform_data  = &max15569_vddcpu_pdata,
 	},
 };
 
@@ -172,22 +207,18 @@ static struct tegra_cl_dvfs_platform_data vcm30_t124_cl_dvfs_data = {
 	.pmu_if = TEGRA_CL_DVFS_PMU_I2C,
 	.u.pmu_i2c = {
 		.fs_rate = 400000,
-		.slave_addr = 0x3a,
+		.slave_addr = 0x74,
 		.reg = 0x07,
 	},
 	.vdd_map = pmu_cpu_vdd_map,
 	.vdd_map_size = PMU_CPU_VDD_MAP_SIZE,
-
+	.flags = TEGRA_CL_DVFS_DYN_OUTPUT_CFG,
 	.cfg_param = &vcm30_t124_cl_dvfs_param,
 };
 
 static int __init vcm30_t124_cl_dvfs_init(void)
 {
 	fill_reg_map();
-#if 0
-	if (tegra_revision < TEGRA_REVISION_A02)
-		vcm30_t124_cl_dvfs_data.out_quiet_then_disable = true;
-#endif
 	tegra_cl_dvfs_device.dev.platform_data = &vcm30_t124_cl_dvfs_data;
 	platform_device_register(&tegra_cl_dvfs_device);
 
@@ -195,15 +226,62 @@ static int __init vcm30_t124_cl_dvfs_init(void)
 }
 #endif
 
+/* MAX15569 switching regulator for vdd_gpu */
+static struct regulator_consumer_supply max15569_vddgpu_supply[] = {
+	REGULATOR_SUPPLY("vdd_gpu", NULL),
+};
+
+static struct regulator_init_data max15569_vddgpu_init_data = {
+	.constraints = {
+		.min_uV = 500000,
+		.max_uV = 1520000,
+		.valid_modes_mask = (REGULATOR_MODE_NORMAL |
+				REGULATOR_MODE_STANDBY),
+		.valid_ops_mask = (REGULATOR_CHANGE_MODE |
+				REGULATOR_CHANGE_STATUS |
+				REGULATOR_CHANGE_CONTROL |
+				REGULATOR_CHANGE_VOLTAGE),
+		.always_on = 0,
+		.boot_on =  0,
+		.apply_uV = 0,
+	},
+	.num_consumer_supplies = ARRAY_SIZE(max15569_vddgpu_supply),
+	.consumer_supplies = max15569_vddgpu_supply,
+};
+
+static struct max15569_regulator_platform_data max15569_vddgpu_pdata = {
+	.reg_init_data = &max15569_vddgpu_init_data,
+	.max_voltage_uV = 1400000,
+	.slew_rate_mv_per_us = 44,
+};
+
+static struct i2c_board_info __initdata max15569_vddgpu_boardinfo[] = {
+	{
+		I2C_BOARD_INFO("max15569", 0x38),
+		.platform_data  = &max15569_vddgpu_pdata,
+	},
+};
+
 static int __init vcm30_t124_max77663_regulator_init(void)
 {
-	void __iomem *pmc = IO_ADDRESS(TEGRA_PMC_BASE);
-	u32 pmc_ctrl;
+	int sku_rev;
+	sku_rev = tegra_board_get_skurev("61859");
 
-	/* configure the power management controller to trigger PMU
-	 * interrupts when low */
-	pmc_ctrl = readl(pmc + PMC_CTRL);
-	writel(pmc_ctrl | PMC_CTRL_INTR_LOW, pmc + PMC_CTRL);
+	tegra_pmc_pmu_interrupt_polarity(true);
+
+#ifdef CONFIG_ARCH_TEGRA_HAS_CL_DVFS
+	vcm30_t124_cl_dvfs_init();
+#endif
+
+	/* C01 boards have tegra gpio for gpu_pwr_req and
+	 *   boards before C01 have PMU gpio for gpu_pwr_req
+	 */
+	if (sku_rev >= 300) {
+		max15569_vddgpu_pdata.ena_gpio = TEGRA_GPIO_PR2;
+	} else {
+		max77663_pdata.num_gpio_cfgs = ARRAY_SIZE(max77663_gpio_cfgs);
+		max77663_pdata.gpio_cfgs = max77663_gpio_cfgs;
+	}
 
 	i2c_register_board_info(4, max77663_regulators,
 				ARRAY_SIZE(max77663_regulators));
@@ -213,10 +291,9 @@ static int __init vcm30_t124_max77663_regulator_init(void)
 
 int __init vcm30_t124_regulator_init(void)
 {
-#ifdef CONFIG_ARCH_TEGRA_HAS_CL_DVFS
-	vcm30_t124_cl_dvfs_init();
-#endif
 	vcm30_t124_max77663_regulator_init();
+	i2c_register_board_info(4, max15569_vddcpu_boardinfo, 1);
+	i2c_register_board_info(4, max15569_vddgpu_boardinfo, 1);
 
 	return 0;
 }
@@ -238,33 +315,11 @@ int __init vcm30_t124_suspend_init(void)
 	return 0;
 }
 
-/* FIXME: Should this be called? */
-int __init vcm30_t124_edp_init(void)
-{
-	unsigned int regulator_mA;
-
-	regulator_mA = get_maximum_cpu_current_supported();
-	if (!regulator_mA)
-		regulator_mA = 14000;
-
-	pr_info("%s: CPU regulator %d mA\n", __func__, regulator_mA);
-	tegra_init_cpu_edp_limits(regulator_mA);
-
-	regulator_mA = get_maximum_core_current_supported();
-	if (!regulator_mA)
-		regulator_mA = 14000;
-
-	pr_info("%s: core regulator %d mA\n", __func__, regulator_mA);
-	tegra_init_core_edp_limits(regulator_mA);
-
-	return 0;
-}
-
 static struct thermal_zone_params soctherm_tzp = {
 	.governor_name = "pid_thermal_gov",
 };
 
-static struct tegra_tsensor_pmu_data tpdata_palmas = {
+static struct tegra_thermtrip_pmic_data tpdata_palmas = {
 	.reset_tegra = 1,
 	.pmu_16bit_ops = 0,
 	.controller_type = 0,
@@ -274,7 +329,7 @@ static struct tegra_tsensor_pmu_data tpdata_palmas = {
 	.poweroff_reg_data = 0x0,
 };
 
-static struct tegra_tsensor_pmu_data tpdata_max77663 = {
+static struct tegra_thermtrip_pmic_data tpdata_max77663 = {
 	.reset_tegra = 1,
 	.pmu_16bit_ops = 0,
 	.controller_type = 0,
@@ -370,10 +425,8 @@ int __init vcm30_t124_soctherm_init(void)
 
 	vcm30_t124_soctherm_data.tshut_pmu_trip_data = &tpdata_max77663;
 
-	tegra_platform_edp_init(vcm30_t124_soctherm_data.therm[THERM_CPU].trips,
-			&vcm30_t124_soctherm_data.therm[THERM_CPU].num_trips,
-			8000); /* edp temperature margin */
-	tegra_add_cpu_vmax_trips(vcm30_t124_soctherm_data.therm[THERM_CPU].trips,
+	tegra_add_cpu_clk_switch_trips(
+			vcm30_t124_soctherm_data.therm[THERM_CPU].trips,
 			&vcm30_t124_soctherm_data.therm[THERM_CPU].num_trips);
 	/*tegra_add_vc_trips(vcm30_t124_soctherm_data.therm[THERM_CPU].trips,
 			&vcm30_t124_soctherm_data.therm[THERM_CPU].num_trips);
@@ -381,26 +434,43 @@ int __init vcm30_t124_soctherm_init(void)
 	return tegra11_soctherm_init(&vcm30_t124_soctherm_data);
 }
 
-
 /*
  * GPIO init table for PCA9539 MISC IO GPIOs
  * that have to be brought up to a known good state
  * except for WiFi as it is handled via the
  * WiFi stack.
  */
-static struct gpio vcm30_t124_system_gpios[] = {
-	{MISCIO_BT_WAKEUP_GPIO,	GPIOF_OUT_INIT_HIGH,	"bt_wk"},
-	{MISCIO_ABB_RST_GPIO,	GPIOF_OUT_INIT_HIGH,	"ebb_rst"},
-	{MISCIO_USER_LED2_GPIO,	GPIOF_OUT_INIT_LOW,	"usr_led2"},
-	{MISCIO_USER_LED1_GPIO, GPIOF_OUT_INIT_LOW,	"usr_led1"},
+static struct gpio vcm30_t124_system_0_gpios[] = {
+	{MISCIO_BT_RST_GPIO,    GPIOF_OUT_INIT_HIGH, "bt_rst"},
+#ifdef CONFIG_TEGRA_PREPOWER_WIFI
+	{MISCIO_WF_EN_GPIO,     GPIOF_OUT_INIT_HIGH, "wifi_en"},
+	{MISCIO_WF_RST_GPIO,    GPIOF_OUT_INIT_HIGH, "wifi_rst"},
+#else
+	{MISCIO_WF_EN_GPIO,     GPIOF_OUT_INIT_LOW,  "wifi_en"},
+	{MISCIO_WF_RST_GPIO,    GPIOF_OUT_INIT_LOW,  "wifi_rst"},
+#endif
+	{MISCIO_BT_EN_GPIO,     GPIOF_OUT_INIT_HIGH, "bt_en"},
+	{MISCIO_BT_WAKEUP_GPIO, GPIOF_OUT_INIT_HIGH, "bt_wk"},
+	{MISCIO_ABB_RST_GPIO,   GPIOF_OUT_INIT_HIGH, "ebb_rst"},
+	{MISCIO_USER_LED2_GPIO, GPIOF_OUT_INIT_LOW,  "usr_led2"},
+	{MISCIO_USER_LED1_GPIO, GPIOF_OUT_INIT_LOW,  "usr_led1"},
 };
 
-static int __init vcm30_t124_system_gpio_init(void)
+/*
+ * GPIO init table for PCA9539 MISC IO GPIOs
+ * related to DAP_D_SEL and DAP_D_EN.
+ */
+static struct gpio vcm30_t124_system_1_gpios[] = {
+	{MISCIO_MUX_DAP_D_SEL,	GPIOF_OUT_INIT_LOW,	"dap_d_sel"},
+	{MISCIO_MUX_DAP_D_EN,	GPIOF_OUT_INIT_LOW,	"dap_d_en"},
+};
+
+static int __init vcm30_t124_system_0_gpio_init(void)
 {
 	int ret, pin_count = 0;
 	struct gpio *gpios_info = NULL;
-	gpios_info = vcm30_t124_system_gpios;
-	pin_count = ARRAY_SIZE(vcm30_t124_system_gpios);
+	gpios_info = vcm30_t124_system_0_gpios;
+	pin_count = ARRAY_SIZE(vcm30_t124_system_0_gpios);
 
 	/* Set required system GPIOs to initial bootup values */
 	ret = gpio_request_array(gpios_info, pin_count);
@@ -409,9 +479,26 @@ static int __init vcm30_t124_system_gpio_init(void)
 		pr_err("%s gpio_request_array failed(%d)\r\n",
 				 __func__, ret);
 
-	/* Export the LED GPIOs to userland for any check */
-	gpio_export(MISCIO_USER_LED2_GPIO, false);
-	gpio_export(MISCIO_USER_LED1_GPIO, false);
+	gpio_free_array(gpios_info, pin_count);
+
+	return ret;
+}
+
+static int __init vcm30_t124_system_1_gpio_init(void)
+{
+	int ret, pin_count = 0;
+	struct gpio *gpios_info = NULL;
+	gpios_info = vcm30_t124_system_1_gpios;
+	pin_count = ARRAY_SIZE(vcm30_t124_system_1_gpios);
+
+	/* Set required system GPIOs to initial bootup values */
+	ret = gpio_request_array(gpios_info, pin_count);
+
+	if (ret)
+		pr_err("%s gpio_request_array failed(%d)\r\n",
+				 __func__, ret);
+
+	gpio_free_array(gpios_info, pin_count);
 
 	return ret;
 }
@@ -425,8 +512,19 @@ static int pca953x_client_setup(struct i2c_client *client,
 				void *context)
 {
 	int ret = 0;
+	int system = (int)context;
 
-	ret = vcm30_t124_system_gpio_init();
+	switch (system) {
+	case 0:
+		ret = vcm30_t124_system_0_gpio_init();
+		break;
+	case 1:
+		ret = vcm30_t124_system_1_gpio_init();
+		break;
+	default:
+		ret = -EINVAL;
+	}
+
 	if (ret < 0)
 		goto fail;
 
@@ -436,21 +534,41 @@ fail:
 	return ret;
 }
 
-static struct pca953x_platform_data vcm30_t124_miscio_pca9539_data = {
-	.gpio_base  = PCA953X_MISCIO_GPIO_BASE,
+
+static struct pca953x_platform_data vcm30_t124_miscio_0_pca9539_data = {
+	.gpio_base  = PCA953X_MISCIO_0_GPIO_BASE,
 	.setup = pca953x_client_setup,
+	.context = (void *)0,
 };
 
-static struct i2c_board_info vcm30_t124_i2c2_board_info_pca9539[] = {
-	{
-		I2C_BOARD_INFO("pca9539", PCA953X_MISCIO_ADDR),
-		.platform_data = &vcm30_t124_miscio_pca9539_data,
-	},
+static struct pca953x_platform_data vcm30_t124_miscio_1_pca9539_data = {
+	.gpio_base  = PCA953X_MISCIO_1_GPIO_BASE,
+	.setup = pca953x_client_setup,
+	.context = (void *)1,
+};
+
+static struct i2c_board_info vcm30_t124_i2c2_board_info_pca9539_0 = {
+	I2C_BOARD_INFO("pca9539", PCA953X_MISCIO_0_ADDR),
+	.platform_data = &vcm30_t124_miscio_0_pca9539_data,
+};
+
+static struct i2c_board_info vcm30_t124_i2c2_board_info_pca9539_1 = {
+	I2C_BOARD_INFO("pca9539", PCA953X_MISCIO_1_ADDR),
+	.platform_data = &vcm30_t124_miscio_1_pca9539_data,
 };
 
 int __init vcm30_t124_pca953x_init(void)
 {
-	i2c_register_board_info(1, vcm30_t124_i2c2_board_info_pca9539,
-		ARRAY_SIZE(vcm30_t124_i2c2_board_info_pca9539));
+	int is_e1860_b00 = 0;
+
+	is_e1860_b00 = tegra_is_board(NULL, "61860", NULL, "300", NULL);
+
+	i2c_register_board_info(1, &vcm30_t124_i2c2_board_info_pca9539_0, 1);
+
+	if (is_e1860_b00) {
+		i2c_register_board_info(1,
+			&vcm30_t124_i2c2_board_info_pca9539_1, 1);
+	}
+
 	return 0;
 }

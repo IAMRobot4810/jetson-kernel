@@ -863,6 +863,8 @@ static long restore_tm_user_regs(struct pt_regs *regs,
 	 * transactional versions should be loaded.
 	 */
 	tm_enable();
+	/* Make sure the transaction is marked as failed */
+	current->thread.tm_texasr |= TEXASR_FS;
 	/* This loads the checkpointed FP/VEC state, if used */
 	tm_recheckpoint(&current->thread, msr);
 	/* Get the top half of the MSR */
@@ -888,7 +890,7 @@ static long restore_tm_user_regs(struct pt_regs *regs,
 #endif
 
 #ifdef CONFIG_PPC64
-int copy_siginfo_to_user32(struct compat_siginfo __user *d, siginfo_t *s)
+int copy_siginfo_to_user32(struct compat_siginfo __user *d, const siginfo_t *s)
 {
 	int err;
 

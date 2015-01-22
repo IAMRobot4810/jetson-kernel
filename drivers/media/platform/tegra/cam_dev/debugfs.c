@@ -1,7 +1,7 @@
 /*
  * debugfs.c
  *
- * Copyright (c) 2013, NVIDIA CORPORATION.  All rights reserved.
+ * Copyright (c) 2013-2014, NVIDIA CORPORATION.  All rights reserved.
 
  * This program is free software; you can redistribute it and/or modify it
  * under the terms and conditions of the GNU General Public License,
@@ -52,8 +52,8 @@ static int camera_debugfs_layout(struct seq_file *s)
 		return -EEXIST;
 
 	if (unlikely(num * sizeof(*layout) != cam_desc->size_layout)) {
-		seq_printf(s, "WHAT? layout size mismatch: %d vs %d x %d\n",
-			cam_desc->size_layout, num, sizeof(*layout));
+		seq_printf(s, "WHAT? layout size mismatch: %zx vs %d\n",
+			cam_desc->size_layout, num);
 		return -EFAULT;
 	}
 
@@ -69,15 +69,36 @@ static int camera_debugfs_layout(struct seq_file *s)
 			layout->dev_id, layout->index, layout->name);
 		layout++;
 	}
-
 	return 0;
 }
 
 static int camera_debugfs_platform_data(struct seq_file *s)
 {
 	struct camera_platform_data *pd = cam_desc->pdata;
+	struct camera_module *md = pd->modules;
+	struct i2c_board_info *bi;
 
-	seq_printf(s, "platform data: cfg = %x\n", pd->cfg);
+	seq_printf(s, "\nplatform data(%s): cfg = %x\n",
+		pd->freeable ? "freeable" : "static", pd->cfg);
+
+	while (md) {
+		if (!md->sensor.bi && !md->focuser.bi && !md->flash.bi)
+			break;
+
+		seq_puts(s, "        {");
+		bi = md->sensor.bi;
+		if (bi)
+			seq_printf(s, " sensor %s @%02x,", bi->type, bi->addr);
+		bi = md->focuser.bi;
+		if (bi)
+			seq_printf(s, " focuser %s @%02x,", bi->type, bi->addr);
+		bi = md->flash.bi;
+		if (bi)
+			seq_printf(s, " flash %s @%02x", bi->type, bi->addr);
+		seq_puts(s, " }\n");
+		md++;
+	}
+
 	return 0;
 }
 
@@ -175,10 +196,10 @@ static int camera_status_show(struct seq_file *s, void *data)
 	}
 
 	camera_debugfs_layout(s);
-	camera_debugfs_platform_data(s);
 	camera_debugfs_chips(s);
 	camera_debugfs_devices(s);
 	camera_debugfs_apps(s);
+	camera_debugfs_platform_data(s);
 
 	return 0;
 }
@@ -255,13 +276,12 @@ int camera_debugfs_init(struct camera_platform_info *info)
 	}
 
 	cam_desc = info;
-	return -EFAULT;
+	return 0;
 }
 
 int camera_debugfs_remove(void)
 {
-	if (cam_desc->d_entry)
-		debugfs_remove_recursive(cam_desc->d_entry);
+	debugfs_remove_recursive(cam_desc->d_entry);
 	cam_desc->d_entry = NULL;
 	return 0;
 }

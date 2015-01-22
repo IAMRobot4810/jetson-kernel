@@ -192,6 +192,7 @@ static struct oz_pd *oz_connect_req(struct oz_pd *cur_pd, struct oz_elt *elt,
 	}
 	if (pd->net_dev != net_dev) {
 		old_net_dev = pd->net_dev;
+		oz_trace_msg(M, "dev_hold(%p)\n", net_dev);
 		dev_hold(net_dev);
 		pd->net_dev = net_dev;
 	}
@@ -280,8 +281,10 @@ done:
 		oz_pd_put(pd);
 		pd = NULL;
 	}
-	if (old_net_dev)
+	if (old_net_dev) {
+		oz_trace_msg(M, "dev_put(%p)", old_net_dev);
 		dev_put(old_net_dev);
+	}
 	if (free_pd)
 		oz_pd_destroy(free_pd);
 	return pd;
@@ -348,8 +351,17 @@ static void oz_rx_frame(struct sk_buff *skb)
 
 	pd = oz_pd_find(src_addr);
 	if (pd) {
-		if (!(pd->state & OZ_PD_S_CONNECTED))
+		if (!(pd->state & OZ_PD_S_CONNECTED)) {
+			char mac_buf[20];
+			char *envp[2];
+			snprintf(mac_buf, sizeof(mac_buf), "ID_MAC=%pm",
+								pd->mac_addr);
+			envp[0] = mac_buf;
+			envp[1] = NULL;
 			oz_pd_set_state(pd, OZ_PD_S_CONNECTED);
+			kobject_uevent_env(&g_oz_wpan_dev->kobj, KOBJ_CHANGE,
+									envp);
+		}
 		getnstimeofday(&current_time);
 		if ((current_time.tv_sec != pd->last_rx_timestamp.tv_sec) ||
 			(pd->presleep < MSEC_PER_SEC))  {
@@ -433,6 +445,26 @@ done:
 		oz_pd_put(pd);
 	consume_skb(skb);
 }
+
+static int oz_net_notifier(struct notifier_block *nb, unsigned long event,
+				void *ndev)
+{
+	struct net_device *dev = ndev;
+	switch (event) {
+	case NETDEV_UNREGISTER:
+	case NETDEV_DOWN:
+		oz_trace_msg(M, "%s: event %s\n", __func__,
+			(event == NETDEV_UNREGISTER) ?
+			"NETDEV_UNREGISTER" : "NETDEV_DOWN");
+		oz_binding_remove(dev->name);
+		break;
+	}
+	return NOTIFY_OK;
+}
+
+static struct notifier_block nb_oz_net_notifier = {
+	.notifier_call = oz_net_notifier
+};
 /*------------------------------------------------------------------------------
  * Context: process
  */
@@ -447,8 +479,10 @@ void oz_protocol_term(void)
 		list_del(&b->link);
 		spin_unlock_bh(&g_binding_lock);
 		dev_remove_pack(&b->ptype);
-		if (b->ptype.dev)
+		if (b->ptype.dev) {
+			oz_trace_msg(M, "dev_put(%p)\n", b->ptype.dev);
 			dev_put(b->ptype.dev);
+		}
 		kfree(b);
 		spin_lock_bh(&g_binding_lock);
 	}
@@ -468,6 +502,7 @@ void oz_protocol_term(void)
 		spin_lock_bh(&g_polling_lock);
 	}
 	spin_unlock_bh(&g_polling_lock);
+	unregister_netdevice_notifier(&nb_oz_net_notifier);
 	oz_trace("Protocol stopped\n");
 }
 /*------------------------------------------------------------------------------
@@ -483,7 +518,7 @@ void oz_pd_heartbeat_handler(unsigned long data)
 	spin_unlock_bh(&g_polling_lock);
 	if (apps)
 		oz_pd_heartbeat(pd, apps);
-
+	clear_bit(OZ_TASKLET_SCHED_HEARTBEAT, &pd->tasklet_sched);
 	oz_pd_put(pd);
 }
 /*------------------------------------------------------------------------------
@@ -507,6 +542,7 @@ void oz_pd_timeout_handler(unsigned long data)
 		oz_pd_stop(pd);
 		break;
 	}
+	clear_bit(OZ_TASKLET_SCHED_TIMEOUT, &pd->tasklet_sched);
 	oz_pd_put(pd);
 }
 /*------------------------------------------------------------------------------
@@ -520,7 +556,15 @@ enum hrtimer_restart oz_pd_heartbeat_event(struct hrtimer *timer)
 	hrtimer_forward(timer,
 		hrtimer_get_expires(timer), pd->pulse_period);
 	oz_pd_get(pd);
-	tasklet_schedule(&pd->heartbeat_tasklet);
+	if (!test_and_set_bit(OZ_TASKLET_SCHED_HEARTBEAT, &pd->tasklet_sched)) {
+		/* schedule tasklet! */
+		tasklet_schedule(&pd->heartbeat_tasklet);
+	} else {
+		/* oz_pd_heartbeat_handler is already scheduled or running.
+		 * decrement pd counter.
+		 */
+		oz_pd_put(pd);
+	}
 	return HRTIMER_RESTART;
 }
 /*------------------------------------------------------------------------------
@@ -532,7 +576,15 @@ enum hrtimer_restart oz_pd_timeout_event(struct hrtimer *timer)
 
 	pd = container_of(timer, struct oz_pd, timeout);
 	oz_pd_get(pd);
-	tasklet_schedule(&pd->timeout_tasklet);
+	if (!test_and_set_bit(OZ_TASKLET_SCHED_TIMEOUT, &pd->tasklet_sched)) {
+		/* Schedule tasklet! */
+		tasklet_schedule(&pd->timeout_tasklet);
+	} else {
+		/* oz_pd_timeout_handler is already scheduled or running.
+		 * decrement pd counter.
+		*/
+		oz_pd_put(pd);
+	}
 	return HRTIMER_NORESTART;
 }
 /*------------------------------------------------------------------------------
@@ -716,14 +768,15 @@ static void pd_stop_all_for_device(struct net_device *net_dev)
  */
 void oz_binding_remove(const char *net_dev)
 {
-	struct oz_binding *binding;
+	struct oz_binding *binding, *tmp;
 	int found = 0;
 
 	oz_trace_msg(M, "Removing binding: '%s'\n", net_dev);
 	spin_lock_bh(&g_binding_lock);
-	list_for_each_entry(binding, &g_binding, link) {
+	list_for_each_entry_safe(binding, tmp, &g_binding, link) {
 		if (compare_binding_name(binding->name, net_dev)) {
 			oz_trace_msg(M, "Binding '%s' found\n", net_dev);
+			list_del(&binding->link);
 			found = 1;
 			break;
 		}
@@ -732,10 +785,10 @@ void oz_binding_remove(const char *net_dev)
 	if (found) {
 		dev_remove_pack(&binding->ptype);
 		if (binding->ptype.dev) {
+			oz_trace_msg(M, "dev_put(%s)\n", binding->name);
 			dev_put(binding->ptype.dev);
 			pd_stop_all_for_device(binding->ptype.dev);
 		}
-		list_del(&binding->link);
 		kfree(binding);
 	}
 }
@@ -781,6 +834,12 @@ int oz_protocol_init(char *devs)
 		return -1;
 	} else {
 		char d[32];
+		int err = 0;
+		err = register_netdevice_notifier(&nb_oz_net_notifier);
+		if (err) {
+			oz_trace("notifier registration failed. err %d\n", err);
+			return -1;
+		}
 		while (*devs) {
 			devs = oz_get_next_device_name(devs, d, sizeof(d));
 			if (d[0])

@@ -126,6 +126,8 @@ typedef void (*regmap_unlock)(void *);
  *                field is NULL but precious_table (see below) is not, the
  *                check is performed on such table (a register is precious if
  *                it belongs to one of the ranges specified by precious_table).
+ * @reg_volatile_set: Optional callback to change access mode for the register
+ *		  between volatile and cached.
  * @lock:	  Optional lock callback (overrides regmap's default lock
  *		  function, based on spinlock or mutex).
  * @unlock:	  As above for unlocking.
@@ -189,6 +191,8 @@ struct regmap_config {
 	bool (*readable_reg)(struct device *dev, unsigned int reg);
 	bool (*volatile_reg)(struct device *dev, unsigned int reg);
 	bool (*precious_reg)(struct device *dev, unsigned int reg);
+	int (*reg_volatile_set)(struct device *dev, unsigned int reg,
+				bool is_volatile);
 	regmap_lock lock;
 	regmap_unlock unlock;
 	void *lock_arg;
@@ -401,6 +405,8 @@ int regcache_sync_region(struct regmap *map, unsigned int min,
 void regcache_cache_only(struct regmap *map, bool enable);
 void regcache_cache_bypass(struct regmap *map, bool enable);
 void regcache_mark_dirty(struct regmap *map);
+int regcache_volatile_set(struct regmap *map, unsigned int reg,
+			  bool is_volatile);
 
 int regmap_register_patch(struct regmap *map, const struct reg_default *regs,
 			  int num_regs);
@@ -485,6 +491,9 @@ int regmap_add_irq_chip(struct regmap *map, int irq, int irq_flags,
 			int irq_base, const struct regmap_irq_chip *chip,
 			struct regmap_irq_chip_data **data);
 void regmap_del_irq_chip(int irq, struct regmap_irq_chip_data *data);
+void regmap_shutdown_irq_chip(struct regmap_irq_chip_data *d);
+int regmap_irq_suspend_noirq(struct regmap_irq_chip_data *d);
+int regmap_irq_resume(struct regmap_irq_chip_data *d);
 int regmap_irq_chip_get_base(struct regmap_irq_chip_data *data);
 int regmap_irq_get_virq(struct regmap_irq_chip_data *data, int irq);
 struct irq_domain *regmap_irq_get_domain(struct regmap_irq_chip_data *data);
@@ -595,6 +604,13 @@ static inline void regcache_cache_bypass(struct regmap *map, bool enable)
 static inline void regcache_mark_dirty(struct regmap *map)
 {
 	WARN_ONCE(1, "regmap API is disabled");
+}
+
+static int regcache_volatile_set(struct regmap *map, unsigned int reg,
+				 bool is_volatile)
+{
+	WARN_ONCE(1, "regmap API is disabled");
+	return -EINVAL;
 }
 
 static inline void regmap_async_complete(struct regmap *map)

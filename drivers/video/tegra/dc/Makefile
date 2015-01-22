@@ -1,6 +1,9 @@
 GCOV_PROFILE := y
+subdir-ccflags-y := -Werror
 EXTRA_CFLAGS += -Idrivers/video/tegra/host
+ccflags-$(CONFIG_ADF_TEGRA) += -Idrivers/video/tegra -Idrivers/staging/android
 obj-y += dc.o bandwidth.o mode.o clock.o lut.o csc.o window.o
+obj-y += cursor.o
 obj-y += rgb.o
 obj-y += of_dc.o
 obj-y += hdmi.o
@@ -19,4 +22,5 @@ obj-y += dc_config.o
 obj-y += sor.o
 obj-$(CONFIG_TEGRA_DP) += dp.o
 obj-$(CONFIG_TEGRA_LVDS) += lvds.o
+obj-$(CONFIG_TEGRA_NVSR) += nvsr.o
 obj-$(CONFIG_TEGRA_DC_EXTENSIONS) += ext/

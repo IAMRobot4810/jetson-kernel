@@ -1,9 +1,7 @@
 /*
- * drivers/video/tegra/host/tsec/tsec.c
- *
  * Tegra TSEC Module Support
  *
- * Copyright (c) 2012-2013, NVIDIA CORPORATION.  All rights reserved.
+ * Copyright (c) 2012-2014, NVIDIA CORPORATION.  All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify it
  * under the terms and conditions of the GNU General Public License,
@@ -30,8 +28,10 @@
 #include <linux/of.h>
 #include <linux/of_device.h>
 #include <linux/of_platform.h>
+#include <linux/dma-mapping.h>
+#include <linux/tegra_pm_domains.h>
 
-#include <mach/pm_domains.h>
+#include <mach/hardware.h>
 
 #include "dev.h"
 #include "tsec.h"
@@ -39,10 +39,7 @@
 #include "bus_client.h"
 #include "nvhost_acm.h"
 #include "chip_support.h"
-#include "nvhost_memmgr.h"
 #include "nvhost_intr.h"
-#include "t114/t114.h"
-#include "t148/t148.h"
 #include "t124/t124.h"
 
 #define TSEC_IDLE_TIMEOUT_DEFAULT	10000	/* 10 milliseconds */
@@ -53,11 +50,17 @@
 
 #define TSEC_OS_START_OFFSET    256
 
+#define TSEC_CARVEOUT_ADDR_OFFSET	0
+#define TSEC_CARVEOUT_SIZE_OFFSET	8
+
 #define get_tsec(ndev) ((struct tsec *)(ndev)->dev.platform_data)
 #define set_tsec(ndev, f) ((ndev)->dev.platform_data = f)
 
 /* The key value in ascii hex */
 static u8 otf_key[TSEC_KEY_LENGTH];
+
+phys_addr_t tsec_carveout_addr;
+phys_addr_t tsec_carveout_size;
 
 /* caller is responsible for freeing */
 static char *tsec_get_fw_name(struct platform_device *dev)
@@ -149,6 +152,9 @@ static int tsec_load_kfuse(struct platform_device *pdev)
 	u32 val;
 	u32 timeout;
 
+	if (tegra_platform_is_linsim())
+		return 0;
+
 	val = host1x_readl(pdev, tsec_tegra_ctl_r());
 	val &= ~tsec_tegra_ctl_tkfi_kfuse_m();
 	host1x_writel(pdev, tsec_tegra_ctl_r(), val);
@@ -179,6 +185,27 @@ static int tsec_load_kfuse(struct platform_device *pdev)
 		return -1;
 }
 
+static int tsec_wait_mem_scrubbing(struct platform_device *dev)
+{
+	int retries = TSEC_IDLE_TIMEOUT_DEFAULT / TSEC_IDLE_CHECK_PERIOD;
+	nvhost_dbg_fn("");
+
+	do {
+		u32 w = host1x_readl(dev, tsec_dmactl_r()) &
+			(tsec_dmactl_dmem_scrubbing_m() |
+			 tsec_dmactl_imem_scrubbing_m());
+
+		if (!w) {
+			nvhost_dbg_fn("done");
+			return 0;
+		}
+		udelay(TSEC_IDLE_CHECK_PERIOD);
+	} while (--retries || !tegra_platform_is_silicon());
+
+	nvhost_err(&dev->dev, "Falcon mem scrubbing timeout");
+	return -ETIMEDOUT;
+}
+
 int tsec_boot(struct platform_device *dev)
 {
 	u32 timeout;
@@ -191,6 +218,10 @@ int tsec_boot(struct platform_device *dev)
 
 	if (m->is_booted)
 		return 0;
+
+	err = tsec_wait_mem_scrubbing(dev);
+	if (err)
+		return err;
 
 	host1x_writel(dev, tsec_dmactl_r(), 0);
 	host1x_writel(dev, tsec_dmatrfbase_r(),
@@ -251,6 +282,8 @@ static int tsec_setup_ucode_image(struct platform_device *dev,
 	int w;
 	u32 reserved_offset;
 	u32 tsec_key_offset;
+	u32 tsec_carveout_addr_off;
+	u32 tsec_carveout_size_off;
 
 	/* copy the whole thing taking into account endianness */
 	for (w = 0; w < ucode_fw->size / sizeof(u32); w++)
@@ -314,6 +347,15 @@ static int tsec_setup_ucode_image(struct platform_device *dev,
 	/* Copy key to be the 16 bytes before the firmware */
 	tsec_key_offset = reserved_offset + TSEC_KEY_OFFSET;
 	memcpy(((void *)ucode_ptr) + tsec_key_offset, otf_key, TSEC_KEY_LENGTH);
+
+	/* Copy tsec carveout address and size before the firmware */
+	tsec_carveout_addr_off = reserved_offset + TSEC_CARVEOUT_ADDR_OFFSET;
+	tsec_carveout_size_off = reserved_offset + TSEC_CARVEOUT_SIZE_OFFSET;
+
+	*((phys_addr_t *)(((void *)ucode_ptr) + tsec_carveout_addr_off)) =
+							tsec_carveout_addr;
+	*((phys_addr_t *)(((void *)ucode_ptr) + tsec_carveout_size_off)) =
+							tsec_carveout_size;
 
 	m->os.size = ucode.bin_header->os_bin_size;
 	m->os.reserved_offset = reserved_offset;
@@ -463,14 +505,6 @@ int nvhost_tsec_prepare_poweroff(struct platform_device *dev)
 
 
 static struct of_device_id tegra_tsec_of_match[] = {
-#ifdef TEGRA_11X_OR_HIGHER_CONFIG
-	{ .compatible = "nvidia,tegra114-tsec",
-		.data = (struct nvhost_device_data *)&t11_tsec_info },
-#endif
-#ifdef TEGRA_14X_OR_HIGHER_CONFIG
-	{ .compatible = "nvidia,tegra148-tsec",
-		.data = (struct nvhost_device_data *)&t14_tsec_info },
-#endif
 #ifdef TEGRA_12X_OR_HIGHER_CONFIG
 	{ .compatible = "nvidia,tegra124-tsec",
 		.data = (struct nvhost_device_data *)&t124_tsec_info },
@@ -481,7 +515,9 @@ static struct of_device_id tegra_tsec_of_match[] = {
 static int tsec_probe(struct platform_device *dev)
 {
 	int err;
+	struct device_node *node;
 	struct nvhost_device_data *pdata = NULL;
+	DEFINE_DMA_ATTRS(attrs);
 
 	if (dev->dev.of_node) {
 		const struct of_device_id *match;
@@ -501,6 +537,21 @@ static int tsec_probe(struct platform_device *dev)
 	pdata->pdev = dev;
 	mutex_init(&pdata->lock);
 	platform_set_drvdata(dev, pdata);
+
+	node = of_find_node_by_name(dev->dev.of_node, "carveout");
+	if (node) {
+		err = of_property_read_u32(node, "carveout_addr",
+					(u32 *)&tsec_carveout_addr);
+		if (!err)
+			err = of_property_read_u32(node, "carveout_size",
+				(u32 *)&tsec_carveout_size);
+		if (!err) {
+			dma_set_attr(DMA_ATTR_SKIP_CPU_SYNC, &attrs);
+			dma_set_attr(DMA_ATTR_SKIP_IOVA_GAP, &attrs);
+			dma_map_linear_attrs(&dev->dev, tsec_carveout_addr,
+				tsec_carveout_size, DMA_TO_DEVICE, &attrs);
+		}
+	}
 
 	err = nvhost_client_device_get_resources(dev);
 	if (err)

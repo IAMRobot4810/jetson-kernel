@@ -38,12 +38,13 @@
 
 #include "dc_reg.h"
 
-
 #define NEED_UPDATE_EMC_ON_EVERY_FRAME (windows_idle_detection_time == 0)
 
-/* 29 bit offset for window clip number */
-#define CURSOR_CLIP_SHIFT_BITS(win)	(win << 29)
-#define CURSOR_CLIP_GET_WINDOW(reg)	((reg >> 29) & 3)
+/* 28 bit offset for window clip number */
+#define CURSOR_CLIP_SHIFT_BITS(win)	(win << 28)
+#define CURSOR_CLIP_GET_WINDOW(reg)	((reg >> 28) & 3)
+
+#define BLANK_ALL	(~0)
 
 static inline u32 ALL_UF_INT(void)
 {
@@ -110,15 +111,30 @@ struct tegra_dc_out_ops {
 	/* callback after new mode is programmed.
 	 * dc clocks are on at this point */
 	void (*modeset_notifier)(struct tegra_dc *dc);
-	/* enable output before dc is fully enabled in order to get
-	 * info such as panel mode for dc enablement.
+	/* Set up interface and sink for partial frame update.
 	 */
-	bool (*early_enable)(struct tegra_dc *dc);
+	int (*partial_update) (struct tegra_dc *dc, unsigned int *xoff,
+		unsigned int *yoff, unsigned int *width, unsigned int *height);
 };
 
 struct tegra_dc_shift_clk_div {
 	unsigned long mul; /* numerator */
 	unsigned long div; /* denominator */
+};
+
+struct tegra_dc_nvsr_data;
+
+enum tegra_dc_cursor_size {
+	TEGRA_DC_CURSOR_SIZE_32X32 = 0,
+	TEGRA_DC_CURSOR_SIZE_64X64 = 1,
+	TEGRA_DC_CURSOR_SIZE_128X128 = 2,
+	TEGRA_DC_CURSOR_SIZE_256X256 = 3,
+};
+
+enum tegra_dc_cursor_format {
+	TEGRA_DC_CURSOR_FORMAT_2BIT_LEGACY = 0,
+	TEGRA_DC_CURSOR_FORMAT_RGBA_NON_PREMULT_ALPHA = 1,
+	TEGRA_DC_CURSOR_FORMAT_RGBA_PREMULT_ALPHA = 3,
 };
 
 struct tegra_dc {
@@ -144,6 +160,14 @@ struct tegra_dc {
 	bool				connected;
 	bool				enabled;
 	bool				suspended;
+	bool				blanked;
+
+	/* Some of the setup code could reset display even if
+	 * DC is already by bootloader.  This one-time mark is
+	 * used to suppress such code blocks during system boot,
+	 * a.k.a the call stack above tegra_dc_probe().
+	 */
+	bool				initialized;
 
 	struct tegra_dc_out		*out;
 	struct tegra_dc_out_ops		*out_ops;
@@ -157,6 +181,8 @@ struct tegra_dc {
 	int				n_windows;
 #ifdef CONFIG_TEGRA_DC_CMU
 	struct tegra_dc_cmu		cmu;
+	bool				cmu_dirty;
+	bool				cmu_enabled;
 #endif
 	wait_queue_head_t		wq;
 	wait_queue_head_t		timestamp_wq;
@@ -167,6 +193,9 @@ struct tegra_dc {
 
 	struct resource			*fb_mem;
 	struct tegra_fb_info		*fb;
+#ifdef CONFIG_ADF_TEGRA
+	struct tegra_adf_info		*adf;
+#endif
 
 	struct {
 		u32			id;
@@ -228,9 +257,23 @@ struct tegra_dc {
 	u32				available_bw;
 	struct tegra_dc_win		tmp_wins[DC_N_WINDOWS];
 
-	int				win_blank_saved_flag;
-	struct tegra_dc_win		win_blank_saved;
 	struct tegra_edid		*edid;
-};
 
+	struct tegra_dc_nvsr_data *nvsr;
+
+	bool	disp_active_dirty;
+
+	struct tegra_dc_cursor {
+		bool dirty;
+		bool enabled;
+		dma_addr_t phys_addr;
+		u32 fg;
+		u32 bg;
+		unsigned clip_win;
+		int x;
+		int y;
+		enum tegra_dc_cursor_size size;
+		enum tegra_dc_cursor_format format;
+	} cursor;
+};
 #endif

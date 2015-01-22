@@ -2,7 +2,7 @@
  * drivers/regulator/tegra-regulator.c
  *
  * Copyright (c) 2010 Google, Inc
- * Copyright (C) 2011 NVIDIA Corporation.
+ * Copyright (C) 2011-2014 NVIDIA Corporation.
  *
  * Author:
  *	Colin Cross <ccross@google.com>
@@ -89,6 +89,8 @@
 #define TEGRA_IS_DISP_POWERGATE_ID(id) (((id) == TEGRA_POWERGATE_DISA) || \
 					((id) == TEGRA_POWERGATE_DISB))
 #define TEGRA_IS_VENC_POWERGATE_ID(id)  ((id) == TEGRA_POWERGATE_VENC)
+#define TEGRA_IS_PCIE_POWERGATE_ID(id)  ((id) == TEGRA_POWERGATE_PCIE)
+#define TEGRA_IS_XUSBC_POWERGATE_ID(id) ((id) == TEGRA_POWERGATE_XUSBC)
 #endif
 
 int  __init tegra_powergate_init(void);

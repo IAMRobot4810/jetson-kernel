@@ -1374,6 +1374,13 @@ config FUTEX
 	  support for "fast userspace mutexes".  The resulting kernel may not
 	  run glibc-based applications correctly.
 
+config HAVE_FUTEX_CMPXCHG
+	bool
+	help
+	  Architectures should select this if futex_atomic_cmpxchg_inatomic()
+	  is implemented and always working. This removes a couple of runtime
+	  checks.
+
 config EPOLL
 	bool "Enable eventpoll support" if EXPERT
 	default y
@@ -1490,9 +1497,9 @@ config PERF_EVENTS
 	  Say Y if unsure.
 
 config PERF_ANDROID_BACKTRACE
-	default n
+	default y
 	bool "Backtracing support for the Perf tool on Android"
-	depends on PERF_EVENTS
+	depends on PERF_EVENTS && ANDROID
 	help
 	  This config changes default function stack format that Perf
 	  profiler uses for backtracing. With this config enabled Perf

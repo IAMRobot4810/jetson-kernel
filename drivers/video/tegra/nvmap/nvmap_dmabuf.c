@@ -79,6 +79,7 @@ struct nvmap_handle_sgt {
 static DEFINE_MUTEX(nvmap_stashed_maps_lock);
 static LIST_HEAD(nvmap_stashed_maps);
 static struct kmem_cache *handle_sgt_cache;
+static struct dma_buf_ops nvmap_dma_buf_ops;
 
 /*
  * Initialize a kmem cache for allocating nvmap_handle_sgt's.
@@ -206,6 +207,7 @@ static void __nvmap_dmabuf_free_sgt_locked(struct nvmap_handle_sgt *nvmap_sgt)
 	list_del(&nvmap_sgt->maps_entry);
 
 	if (info->handle->heap_pgalloc) {
+		dma_set_attr(DMA_ATTR_SKIP_IOVA_GAP, &attrs);
 		dma_set_attr(DMA_ATTR_SKIP_CPU_SYNC, &attrs);
 		dma_unmap_sg_attrs(nvmap_sgt->dev,
 				   nvmap_sgt->sgt->sgl, nvmap_sgt->sgt->nents,
@@ -364,6 +366,7 @@ static struct sg_table *nvmap_dmabuf_map_dma_buf(
 	}
 
 	if (info->handle->heap_pgalloc && info->handle->alloc) {
+		dma_set_attr(DMA_ATTR_SKIP_IOVA_GAP, &attrs);
 		dma_set_attr(DMA_ATTR_SKIP_CPU_SYNC, &attrs);
 		ents = dma_map_sg_attrs(attach->dev, sgt->sgl,
 					sgt->nents, dir, &attrs);
@@ -372,12 +375,7 @@ static struct sg_table *nvmap_dmabuf_map_dma_buf(
 			goto err_map;
 		}
 		BUG_ON(ents != 1);
-	} else if (info->handle->alloc) {
-		/* carveout has linear map setup. */
-		mutex_lock(&info->handle->lock);
-		sg_dma_address(sgt->sgl) = info->handle->carveout->base;
-		mutex_unlock(&info->handle->lock);
-	} else {
+	} else if (!info->handle->alloc) {
 		goto err_map;
 	}
 
@@ -431,6 +429,8 @@ static void nvmap_dmabuf_release(struct dma_buf *dmabuf)
 				   info->handle->owner->name : "unknown",
 				   info->handle,
 				   dmabuf);
+	BUG_ON(dmabuf != info->handle->dmabuf);
+	info->handle->dmabuf = NULL;
 
 	mutex_lock(&info->maps_lock);
 	while (!list_empty(&info->maps)) {
@@ -442,8 +442,7 @@ static void nvmap_dmabuf_release(struct dma_buf *dmabuf)
 	}
 	mutex_unlock(&info->maps_lock);
 
-	dma_buf_detach(info->handle->dmabuf, info->handle->attachment);
-	info->handle->dmabuf = NULL;
+	dma_buf_detach(dmabuf, info->handle->attachment);
 	nvmap_handle_put(info->handle);
 	kfree(info);
 }
@@ -455,8 +454,8 @@ static int nvmap_dmabuf_begin_cpu_access(struct dma_buf *dmabuf,
 	struct nvmap_handle_info *info = dmabuf->priv;
 
 	trace_nvmap_dmabuf_begin_cpu_access(dmabuf, start, len);
-	return __nvmap_cache_maint(NULL, info->handle, start, start + len,
-				   NVMAP_CACHE_OP_INV, 1);
+	return __nvmap_do_cache_maint(NULL, info->handle, start, start + len,
+				      NVMAP_CACHE_OP_WB_INV, false);
 }
 
 static void nvmap_dmabuf_end_cpu_access(struct dma_buf *dmabuf,
@@ -466,8 +465,8 @@ static void nvmap_dmabuf_end_cpu_access(struct dma_buf *dmabuf,
 	struct nvmap_handle_info *info = dmabuf->priv;
 
 	trace_nvmap_dmabuf_end_cpu_access(dmabuf, start, len);
-	__nvmap_cache_maint(NULL, info->handle, start, start + len,
-				   NVMAP_CACHE_OP_WB_INV, 1);
+	__nvmap_do_cache_maint(NULL, info->handle, start, start + len,
+				   NVMAP_CACHE_OP_WB, false);
 
 }
 
@@ -520,6 +519,29 @@ static void nvmap_dmabuf_vunmap(struct dma_buf *dmabuf, void *vaddr)
 	__nvmap_munmap(info->handle, vaddr);
 }
 
+static int nvmap_dmabuf_set_private(struct dma_buf *dmabuf,
+		struct device *dev, void *priv, void (*delete)(void *priv))
+{
+	struct nvmap_handle_info *info;
+
+	info = dmabuf->priv;
+	info->handle->nvhost_priv = priv;
+	info->handle->nvhost_priv_delete = delete;
+
+	return 0;
+}
+
+static void *nvmap_dmabuf_get_private(struct dma_buf *dmabuf,
+		struct device *dev)
+{
+	void *priv;
+	struct nvmap_handle_info *info;
+
+	info = dmabuf->priv;
+	priv = info->handle->nvhost_priv;
+	return priv;
+}
+
 static struct dma_buf_ops nvmap_dma_buf_ops = {
 	.attach		= nvmap_dmabuf_attach,
 	.detach		= nvmap_dmabuf_detach,
@@ -534,6 +556,8 @@ static struct dma_buf_ops nvmap_dma_buf_ops = {
 	.mmap		= nvmap_dmabuf_mmap,
 	.vmap		= nvmap_dmabuf_vmap,
 	.vunmap		= nvmap_dmabuf_vunmap,
+	.set_drvdata	= nvmap_dmabuf_set_private,
+	.get_drvdata	= nvmap_dmabuf_get_private,
 };
 
 /*
@@ -572,17 +596,26 @@ err_nomem:
 	return ERR_PTR(err);
 }
 
-int __nvmap_dmabuf_fd(struct dma_buf *dmabuf, int flags)
+int __nvmap_dmabuf_fd(struct nvmap_client *client,
+		      struct dma_buf *dmabuf, int flags)
 {
 	int fd;
+	int start_fd = CONFIG_NVMAP_FD_START;
 
+#ifdef CONFIG_NVMAP_DEFER_FD_RECYCLE
+	if (client->next_fd < CONFIG_NVMAP_FD_START)
+		client->next_fd = CONFIG_NVMAP_FD_START;
+	start_fd = client->next_fd++;
+	if (client->next_fd >= CONFIG_NVMAP_DEFER_FD_RECYCLE_MAX_FD)
+		client->next_fd = CONFIG_NVMAP_FD_START;
+#endif
 	if (!dmabuf || !dmabuf->file)
 		return -EINVAL;
-	/* Allocate fd from 1024 onwards to overcome
+	/* Allocate fd from start_fd(>=1024) onwards to overcome
 	 * __FD_SETSIZE limitation issue for select(),
 	 * pselect() syscalls.
 	 */
-	fd = __alloc_fd(current->files, 1024,
+	fd = __alloc_fd(current->files, start_fd,
 			sysctl_nr_open, flags);
 	if (fd < 0)
 		return fd;
@@ -592,15 +625,15 @@ int __nvmap_dmabuf_fd(struct dma_buf *dmabuf, int flags)
 	return fd;
 }
 
-int nvmap_get_dmabuf_fd(struct nvmap_client *client, ulong id)
+int nvmap_get_dmabuf_fd(struct nvmap_client *client, struct nvmap_handle *h)
 {
 	int fd;
 	struct dma_buf *dmabuf;
 
-	dmabuf = __nvmap_dmabuf_export(client, id);
+	dmabuf = __nvmap_dmabuf_export(client, h);
 	if (IS_ERR(dmabuf))
 		return PTR_ERR(dmabuf);
-	fd = __nvmap_dmabuf_fd(dmabuf, O_CLOEXEC);
+	fd = __nvmap_dmabuf_fd(client, dmabuf, O_CLOEXEC);
 	if (fd < 0)
 		goto err_out;
 	return fd;
@@ -611,12 +644,11 @@ err_out:
 }
 
 struct dma_buf *__nvmap_dmabuf_export(struct nvmap_client *client,
-				 unsigned long id)
+				 struct nvmap_handle *handle)
 {
-	struct nvmap_handle *handle;
 	struct dma_buf *buf;
 
-	handle = nvmap_get_handle_id(client, id);
+	handle = nvmap_handle_get(handle);
 	if (!handle)
 		return ERR_PTR(-EINVAL);
 	buf = handle->dmabuf;
@@ -652,40 +684,49 @@ struct dma_buf *__nvmap_dmabuf_export_from_ref(struct nvmap_handle_ref *ref)
 /*
  * Returns the nvmap handle ID associated with the passed dma_buf's fd. This
  * does not affect the ref count of the dma_buf.
+ * NOTE: Callers of this utility function must invoke nvmap_handle_put after
+ * using the returned nvmap_handle. Call to nvmap_handle_get is required in
+ * this utility function to avoid race conditions in code where nvmap_handle
+ * returned by this function is freed concurrently while the caller is still
+ * using it.
  */
-ulong nvmap_get_id_from_dmabuf_fd(struct nvmap_client *client, int fd)
+struct nvmap_handle *nvmap_get_id_from_dmabuf_fd(struct nvmap_client *client,
+						 int fd)
 {
-	ulong id = -EINVAL;
+	struct nvmap_handle *handle = ERR_PTR(-EINVAL);
 	struct dma_buf *dmabuf;
 	struct nvmap_handle_info *info;
 
 	dmabuf = dma_buf_get(fd);
 	if (IS_ERR(dmabuf))
-		return PTR_ERR(dmabuf);
+		return ERR_CAST(dmabuf);
 	if (dmabuf->ops == &nvmap_dma_buf_ops) {
 		info = dmabuf->priv;
-		id = (ulong) info->handle;
+		handle = info->handle;
+		if (!nvmap_handle_get(handle))
+			handle = ERR_PTR(-EINVAL);
 	}
 	dma_buf_put(dmabuf);
-	return id;
+	return handle;
 }
 
 int nvmap_ioctl_share_dmabuf(struct file *filp, void __user *arg)
 {
 	struct nvmap_create_handle op;
 	struct nvmap_client *client = filp->private_data;
-	ulong handle;
+	struct nvmap_handle *handle;
 
 	BUG_ON(!client);
 
 	if (copy_from_user(&op, (void __user *)arg, sizeof(op)))
 		return -EFAULT;
 
-	handle = unmarshal_user_id(op.id);
+	handle = unmarshal_user_handle(op.id);
 	if (!handle)
 		return -EINVAL;
 
 	op.fd = nvmap_get_dmabuf_fd(client, handle);
+	nvmap_handle_put(handle);
 	if (op.fd < 0)
 		return op.fd;
 
@@ -700,57 +741,16 @@ int nvmap_get_dmabuf_param(struct dma_buf *dmabuf, u32 param, u64 *result)
 {
 	struct nvmap_handle_info *info;
 
+	if (dmabuf->ops != &nvmap_dma_buf_ops)
+		return -EINVAL;
+
 	if (WARN_ON(!virt_addr_valid(dmabuf)))
 		return -EINVAL;
 
 	info = dmabuf->priv;
 	return __nvmap_get_handle_param(NULL, info->handle, param, result);
 }
-
-struct sg_table *nvmap_dmabuf_sg_table(struct dma_buf *dmabuf)
-{
-	struct nvmap_handle_info *info;
-
-	if (WARN_ON(!virt_addr_valid(dmabuf)))
-		return ERR_PTR(-EINVAL);
-
-	info = dmabuf->priv;
-	return __nvmap_sg_table(NULL, info->handle);
-}
-
-void nvmap_dmabuf_free_sg_table(struct dma_buf *dmabuf, struct sg_table *sgt)
-{
-	if (WARN_ON(!virt_addr_valid(sgt)))
-		return;
-
-	__nvmap_free_sg_table(NULL, NULL, sgt);
-}
-
-void nvmap_set_dmabuf_private(struct dma_buf *dmabuf, void *priv,
-		void (*delete)(void *priv))
-{
-	struct nvmap_handle_info *info;
-
-	if (WARN_ON(!virt_addr_valid(dmabuf)))
-		return;
-
-	info = dmabuf->priv;
-	info->handle->nvhost_priv = priv;
-	info->handle->nvhost_priv_delete = delete;
-}
-
-void *nvmap_get_dmabuf_private(struct dma_buf *dmabuf)
-{
-	void *priv;
-	struct nvmap_handle_info *info;
-
-	if (WARN_ON(!virt_addr_valid(dmabuf)))
-		return ERR_PTR(-EINVAL);
-
-	info = dmabuf->priv;
-	priv = info->handle->nvhost_priv;
-	return priv;
-}
+EXPORT_SYMBOL(nvmap_get_dmabuf_param);
 
 /*
  * List detailed info for all buffers allocated.
@@ -777,13 +777,13 @@ static int __nvmap_dmabuf_stashes_show(struct seq_file *s, void *data)
 		}
 
 		seq_printf(s, "%s: ", name);
-		seq_printf(s, " flags = 0x%08lx, refs = %d\n",
+		seq_printf(s, " flags = 0x%08x, refs = %d\n",
 			   handle->flags, atomic_read(&handle->ref));
 
 		seq_printf(s, "  device = %s\n",
 			   dev_name(handle->attachment->dev));
 		addr = sg_dma_address(nvmap_sgt->sgt->sgl);
-		seq_printf(s, "  IO addr = 0x%pa + 0x%x\n",
+		seq_printf(s, "  IO addr = 0x%pa + 0x%zx\n",
 			&addr, handle->size);
 
 		/* Cleanup. */

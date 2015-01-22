@@ -1,7 +1,7 @@
 /*
  * board-pmu-defines.h: Most of macro definition used in board-xxx-power files.
  *
- * Copyright (c) 2013, NVIDIA Corporation. All rights reserved.
+ * Copyright (c) 2013-2014, NVIDIA Corporation. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 2 as
@@ -85,45 +85,6 @@
 		.vsel = _vsel,						\
 	}
 
-#define AS3722_SUPPLY(_name) "as3722_"#_name
-#define AMS_PDATA_INIT(_name, _supply_reg, _min_uV, _max_uV, _always_on,\
-			 _boot_on, _apply_uV, _ext_cntrl)		\
-static struct regulator_init_data as3722_##_name##_reg_idata =		\
-{									\
-	.supply_regulator = _supply_reg,				\
-	.constraints = {						\
-		.name = AS3722_SUPPLY(_name),				\
-		.min_uV = _min_uV,					\
-		.max_uV = _max_uV,					\
-		.valid_modes_mask = (REGULATOR_MODE_NORMAL |		\
-				     REGULATOR_MODE_STANDBY),		\
-		.valid_ops_mask = (REGULATOR_CHANGE_MODE |		\
-				   REGULATOR_CHANGE_STATUS |		\
-				   REGULATOR_CHANGE_VOLTAGE),		\
-		.always_on = _always_on,				\
-		.boot_on = _boot_on,					\
-		.apply_uV = _apply_uV,					\
-	},								\
-	.num_consumer_supplies =					\
-		ARRAY_SIZE(as3722_##_name##_supply),			\
-	.consumer_supplies = as3722_##_name##_supply,			\
-};									\
-static struct as3722_regulator_platform_data as3722_##_name##_reg_pdata =	\
-{									\
-	.reg_init = &as3722_##_name##_reg_idata,			\
-	.ext_control = _ext_cntrl					\
-}									\
-
-#define AS3722_PIN_CONTROL(_pin, _func, _bias_pull, _od, _hi_imp, _gpio_mode)  \
-	{							\
-		.pin = _pin,					\
-		.function = _func,				\
-		.prop_bias_pull = _bias_pull,			\
-		.prop_open_drain = _od,				\
-		.prop_high_impedance = _hi_imp,			\
-		.prop_gpio_mode = _gpio_mode,			\
-	}
-
 /* Macro for defining fixed regulator sub device data */
 #define fixed_sync_supply(_name) "fixed_reg_en_"#_name
 
@@ -174,7 +135,7 @@ static struct platform_device fixed_reg_en_##_var##_dev = {		\
 
 #ifdef CONFIG_ARCH_TEGRA_HAS_CL_DVFS
 /* Macro definition of dfll bypass device */
-#define DFLL_BYPASS(_board, _min, _step, _size, _us_sel, _msel_gpio)	       \
+#define DFLL_BYPASS(_board, _min, _step, _init, _size, _us_sel, _msel_gpio)    \
 static struct regulator_init_data _board##_dfll_bypass_init_data = {	       \
 	.num_consumer_supplies = ARRAY_SIZE(_board##_dfll_bypass_consumers),   \
 	.consumer_supplies = _board##_dfll_bypass_consumers,		       \
@@ -186,6 +147,7 @@ static struct regulator_init_data _board##_dfll_bypass_init_data = {	       \
 				REGULATOR_CHANGE_VOLTAGE),		       \
 		.min_uV = (_min),					       \
 		.max_uV = ((_size) - 1) * (_step) + (_min),		       \
+		.init_uV = (_init),					       \
 		.always_on = 1,						       \
 		.boot_on = 1,						       \
 	},								       \

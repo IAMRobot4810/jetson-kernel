@@ -41,10 +41,10 @@
 #include <linux/of_device.h>
 #include <linux/of_gpio.h>
 #include <linux/tegra-fuse.h>
+#include <linux/tegra_pm_domains.h>
 
 #include <mach/tegra_usb_pad_ctrl.h>
 #include <mach/tegra_usb_pmc.h>
-#include <mach/pm_domains.h>
 #include <mach/mc.h>
 #include <mach/xusb.h>
 
@@ -90,6 +90,7 @@
 		_reg, readl(_base + _reg))
 
 #define PMC_PORTMAP_MASK(map, pad)	(((map) >> 4*(pad)) & 0xF)
+#define GET_SS_PORTMAP(map, p)		(((map) >> 4*(p)) & 0xF)
 
 #define PMC_USB_DEBOUNCE_DEL_0			0xec
 #define   UTMIP_LINE_DEB_CNT(x)		(((x) & 0xf) << 16)
@@ -179,7 +180,8 @@ struct cfgtbl {
 	u8 magic[8];
 	u32 SS_low_power_entry_timeout;
 	u8 num_hsic_port;
-	u8 padding[139]; /* padding bytes to makeup 256-bytes cfgtbl */
+	u8 ss_portmap;
+	u8 padding[138]; /* padding bytes to makeup 256-bytes cfgtbl */
 };
 
 struct xusb_save_regs {
@@ -1157,7 +1159,8 @@ static void fw_log_deinit(struct tegra_xhci_hcd *tegra)
 static int hsic_power_rail_enable(struct tegra_xhci_hcd *tegra)
 {
 	struct device *dev = &tegra->pdev->dev;
-	struct tegra_xusb_regulator_name *supply = &tegra->bdata->supply;
+	const struct tegra_xusb_regulator_name *supply =
+				&tegra->soc_config->supply;
 	int ret;
 
 	if (tegra->vddio_hsic_reg)
@@ -1485,7 +1488,8 @@ static void tegra_xhci_cfg(struct tegra_xhci_hcd *tegra)
 static int tegra_xusb_regulator_init(struct tegra_xhci_hcd *tegra,
 		struct platform_device *pdev)
 {
-	struct tegra_xusb_regulator_name *supply = &tegra->bdata->supply;
+	const struct tegra_xusb_regulator_name *supply =
+				&tegra->soc_config->supply;
 	int i;
 	int err = 0;
 
@@ -2187,6 +2191,14 @@ static void tegra_xhci_program_ss_pad(struct tegra_xhci_hcd *tegra,
 		(port ? TEGRA_XUSB_SS1_PORT_MAP : TEGRA_XUSB_SS0_PORT_MAP));
 	writel(reg, tegra->padctl_base + padregs->ss_port_map_0);
 
+	/* Make sure the SS port capability set correctly */
+	reg = readl(tegra->padctl_base + padregs->usb2_port_cap_0);
+	reg &= ~USB2_PORT_CAP_MASK(
+			GET_SS_PORTMAP(tegra->bdata->ss_portmap, port));
+	reg |= USB2_PORT_CAP_HOST(
+			GET_SS_PORTMAP(tegra->bdata->ss_portmap, port));
+	writel(reg, tegra->padctl_base + padregs->usb2_port_cap_0);
+
 	tegra_xhci_restore_dfe_context(tegra, port);
 	tegra_xhci_restore_ctle_context(tegra, port);
 }
@@ -2448,9 +2460,10 @@ static int load_firmware(struct tegra_xhci_hcd *tegra, bool resetARU)
 	struct xhci_op_regs __iomem *op_regs;
 	int pad;
 
-	/* enable mbox interrupt */
-	writel(readl(tegra->fpci_base + XUSB_CFG_ARU_MBOX_CMD) | MBOX_INT_EN,
-		tegra->fpci_base + XUSB_CFG_ARU_MBOX_CMD);
+	/* Program SS port map config */
+	cfg_tbl->ss_portmap = 0x0;
+	cfg_tbl->ss_portmap |=
+		(tegra->bdata->portmap & ((1 << XUSB_SS_PORT_COUNT) - 1));
 
 	/* First thing, reset the ARU. By the time we get to
 	 * loading boot code below, reset would be complete.
@@ -3069,6 +3082,7 @@ tegra_xhci_host_partition_elpg_exit(struct tegra_xhci_hcd *tegra)
 			csb_read(tegra, XUSB_FALC_FS_PVTPORTSC3));
 	debug_print_portsc(xhci);
 
+	tegra_xhci_enable_fw_message(tegra);
 	ret = load_firmware(tegra, false /* EPLG exit, do not reset ARU */);
 	if (ret < 0) {
 		xhci_err(xhci, "%s: failed to load firmware %d\n",
@@ -3354,12 +3368,13 @@ static irqreturn_t tegra_xhci_smi_irq(int irq, void *ptrdev)
 	 */
 
 	temp = readl(tegra->fpci_base + XUSB_CFG_ARU_SMI_INTR);
-
-	/* write 1 to clear SMI INTR en bit ( bit 3 ) */
-	temp = MBOX_SMI_INTR_EN;
 	writel(temp, tegra->fpci_base + XUSB_CFG_ARU_SMI_INTR);
 
-	schedule_work(&tegra->mbox_work);
+	xhci_dbg(tegra->xhci, "SMI INTR status 0x%x\n", temp);
+	if (temp & SMI_INTR_STATUS_FW_REINIT)
+		xhci_err(tegra->xhci, "Firmware reinit.\n");
+	if (temp & SMI_INTR_STATUS_MBOX)
+		schedule_work(&tegra->mbox_work);
 
 	spin_unlock(&tegra->lock);
 	return IRQ_HANDLED;
@@ -4094,20 +4109,6 @@ static void tegra_xusb_read_board_data(struct tegra_xhci_hcd *tegra)
 					(u32 *) &bdata->lane_owner);
 	ret = of_property_read_u32(node, "nvidia,ulpicap",
 					(u32 *) &bdata->ulpicap);
-	ret = of_property_read_string_index(node, "nvidia,supply_utmi_vbuses",
-					0, &bdata->supply.utmi_vbuses[0]);
-	ret = of_property_read_string_index(node, "nvidia,supply_utmi_vbuses",
-					1, &bdata->supply.utmi_vbuses[1]);
-	ret = of_property_read_string_index(node, "nvidia,supply_utmi_vbuses",
-					2, &bdata->supply.utmi_vbuses[2]);
-	ret = of_property_read_string(node, "nvidia,supply_s3p3v",
-					&bdata->supply.s3p3v);
-	ret = of_property_read_string(node, "nvidia,supply_s1p8v",
-					&bdata->supply.s1p8v);
-	ret = of_property_read_string(node, "nvidia,supply_vddio_hsic",
-					&bdata->supply.vddio_hsic);
-	ret = of_property_read_string(node, "nvidia,supply_s1p05v",
-					&bdata->supply.s1p05v);
 	ret = of_property_read_u8_array(node, "nvidia,hsic0",
 					(u8 *) &bdata->hsic[0],
 					sizeof(bdata->hsic[0]));
@@ -4151,8 +4152,15 @@ static const struct tegra_xusb_soc_config tegra114_soc_config = {
 	.hs_slew = (0xE << 6),
 	.ls_rslew_pad0 = (0x3 << 14),
 	.ls_rslew_pad1 = (0x0 << 14),
-	.hs_disc_lvl = (0x5 << 2),
+	.hs_disc_lvl = (0x7 << 2),
 	.spare_in = 0x0,
+	.supply = {
+		.utmi_vbuses = {"usb_vbus0", "usb_vbus1", "usb_vbus2",},
+		.s3p3v = "hvdd_usb",
+		.s1p8v = "avdd_usb_pll",
+		.vddio_hsic = "vddio_hsic",
+		.s1p05v = "avddio_usb",
+	},
 };
 
 static const struct tegra_xusb_soc_config tegra124_soc_config = {
@@ -4167,8 +4175,15 @@ static const struct tegra_xusb_soc_config tegra124_soc_config = {
 	.ls_rslew_pad0 = (0x3 << 14),
 	.ls_rslew_pad1 = (0x0 << 14),
 	.ls_rslew_pad2 = (0x0 << 14),
-	.hs_disc_lvl = (0x5 << 2),
+	.hs_disc_lvl = (0x7 << 2),
 	.spare_in = 0x1,
+	.supply = {
+		.utmi_vbuses = {"usb_vbus0", "usb_vbus1", "usb_vbus2",},
+		.s3p3v = "hvdd_usb",
+		.s1p8v = "avdd_pll_utmip",
+		.vddio_hsic = "vddio_hsic",
+		.s1p05v = "avddio_usb",
+	},
 };
 
 static struct of_device_id tegra_xhci_of_match[] = {
@@ -4506,7 +4521,7 @@ static int tegra_xhci_probe2(struct tegra_xhci_hcd *tegra)
 	unsigned port;
 
 
-	ret = load_firmware(tegra, true /* do reset ARU */);
+	ret = load_firmware(tegra, false /* do reset ARU */);
 	if (ret < 0) {
 		dev_err(&pdev->dev, "failed to load firmware\n");
 		return -ENODEV;
@@ -4588,8 +4603,6 @@ static int tegra_xhci_probe2(struct tegra_xhci_hcd *tegra)
 	tegra->mbox_owner = 0xffff;
 	INIT_WORK(&tegra->mbox_work, tegra_xhci_process_mbox_message);
 
-	tegra_xhci_enable_fw_message(tegra);
-
 	/* do ss partition elpg exit related initialization */
 	INIT_WORK(&tegra->ss_elpg_exit_work, ss_partition_elpg_exit_work);
 
@@ -4634,6 +4647,7 @@ static int tegra_xhci_probe2(struct tegra_xhci_hcd *tegra)
 		tegra->dfe_ctx_saved[port] = false;
 	}
 
+	tegra_xhci_enable_fw_message(tegra);
 	hsic_pad_pretend_connect(tegra);
 
 	tegra_xhci_debug_read_pads(tegra);

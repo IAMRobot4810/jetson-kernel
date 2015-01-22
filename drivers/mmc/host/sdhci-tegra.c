@@ -32,6 +32,8 @@
 #include <linux/regulator/consumer.h>
 #include <linux/delay.h>
 #include <linux/pm_runtime.h>
+#include <linux/tegra_pm_domains.h>
+#include <linux/dma-mapping.h>
 
 #ifndef CONFIG_ARM64
 #include <asm/gpio.h>
@@ -45,7 +47,6 @@
 
 #include <linux/platform_data/mmc-sdhci-tegra.h>
 #include <mach/pinmux.h>
-#include <mach/pm_domains.h>
 
 #include "sdhci-pltfm.h"
 
@@ -171,6 +172,9 @@
 		  SDHCI_QUIRK2_NON_STANDARD_TUNING | \
 		  SDHCI_QUIRK2_NO_CALC_MAX_DISCARD_TO | \
 		  SDHCI_QUIRK2_REG_ACCESS_REQ_HOST_CLK)
+
+#define IS_QUIRKS2_DELAYED_CLK_GATE(host) \
+		(host->quirks2 & SDHCI_QUIRK2_DELAYED_CLK_GATE)
 
 /* Interface voltages */
 #define SDHOST_1V8_OCR_MASK	0x8
@@ -473,6 +477,13 @@ struct sdhci_tegra_sd_stats {
 	unsigned int cmd_to_count;
 };
 
+#ifdef CONFIG_DEBUG_FS
+struct dbg_cfg_data {
+	unsigned int		tap_val;
+	unsigned int		trim_val;
+	bool			clk_ungated;
+};
+#endif
 struct sdhci_tegra {
 	const struct tegra_sdhci_platform_data *plat;
 	const struct sdhci_tegra_soc_data *soc_data;
@@ -528,6 +539,10 @@ struct sdhci_tegra {
 	struct tegra_tuning_data tuning_data[DFS_FREQ_COUNT];
 	struct tegra_freq_gov_data *gov_data;
 	u32 speedo;
+#ifdef CONFIG_DEBUG_FS
+	/* Override debug config data */
+	struct dbg_cfg_data dbg_cfg;
+#endif
 };
 
 static struct clk *pll_c;
@@ -547,7 +562,10 @@ static void sdhci_tegra_set_tap_delay(struct sdhci_host *sdhci,
 	unsigned int tap_delay);
 static int tegra_sdhci_configure_regulators(struct sdhci_tegra *tegra_host,
 	u8 option, int min_uV, int max_uV);
-static void tegra_sdhci_do_calibration(struct sdhci_host *sdhci);
+static void sdhci_tegra_set_trim_delay(struct sdhci_host *sdhci,
+	unsigned int trim_delay);
+static void tegra_sdhci_do_calibration(struct sdhci_host *sdhci,
+	unsigned char signal_voltage);
 
 static int show_error_stats_dump(struct seq_file *s, void *data)
 {
@@ -941,7 +959,8 @@ static int tegra_sdhci_set_uhs_signaling(struct sdhci_host *host,
 		unsigned int uhs)
 {
 	u16 clk, ctrl_2;
-	u32 vndr_ctrl;
+	u32 vndr_ctrl, trim_delay, best_tap_value;
+	struct tegra_tuning_data *tuning_data;
 	struct sdhci_pltfm_host *pltfm_host = sdhci_priv(host);
 	struct sdhci_tegra *tegra_host = pltfm_host->priv;
 	const struct tegra_sdhci_platform_data *plat = tegra_host->plat;
@@ -984,15 +1003,35 @@ static int tegra_sdhci_set_uhs_signaling(struct sdhci_host *host,
 
 		/* Set the ddr mode trim delay if required */
 		if (plat->ddr_trim_delay != -1) {
+			trim_delay = plat->ddr_trim_delay;
 			vndr_ctrl = sdhci_readl(host, SDHCI_VNDR_CLK_CTRL);
 			vndr_ctrl &= ~(0x1F <<
 				SDHCI_VNDR_CLK_CTRL_TRIM_VALUE_SHIFT);
-			vndr_ctrl |= (plat->ddr_trim_delay <<
+			vndr_ctrl |= (trim_delay <<
 				SDHCI_VNDR_CLK_CTRL_TRIM_VALUE_SHIFT);
 			sdhci_writel(host, vndr_ctrl, SDHCI_VNDR_CLK_CTRL);
 		}
 	}
-
+	/* Set the best tap value based on timing */
+	if (((uhs == MMC_TIMING_MMC_HS200) ||
+		(uhs == MMC_TIMING_UHS_SDR104) ||
+		(uhs == MMC_TIMING_UHS_SDR50)) &&
+		(tegra_host->tuning_status == TUNING_STATUS_DONE)) {
+		tuning_data = sdhci_tegra_get_tuning_data(host,
+			host->mmc->ios.clock);
+		best_tap_value = (tegra_host->tap_cmd ==
+			TAP_CMD_TRIM_HIGH_VOLTAGE) ?
+			tuning_data->nom_best_tap_value :
+			tuning_data->best_tap_value;
+	} else {
+		best_tap_value = tegra_host->plat->tap_delay;
+	}
+	vndr_ctrl = sdhci_readl(host, SDHCI_VNDR_CLK_CTRL);
+	vndr_ctrl &= ~(0xFF <<
+		SDHCI_VNDR_CLK_CTRL_TAP_VALUE_SHIFT);
+	vndr_ctrl |= (best_tap_value <<
+		SDHCI_VNDR_CLK_CTRL_TAP_VALUE_SHIFT);
+	sdhci_writel(host, vndr_ctrl, SDHCI_VNDR_CLK_CTRL);
 	return 0;
 }
 
@@ -1352,9 +1391,15 @@ static void tegra_sdhci_set_clk_rate(struct sdhci_host *sdhci,
 		clk_rate = clock;
 	}
 
+	if (sdhci->mmc->ios.timing == MMC_TIMING_UHS_SDR50)
+		clk_rate = tegra_host->soc_data->tuning_freq_list[0];
+
 	if (tegra_host->max_clk_limit &&
 		(clk_rate > tegra_host->max_clk_limit))
 		clk_rate = tegra_host->max_clk_limit;
+
+	if (clk_rate > clk_get_max_rate(pltfm_host->clk))
+		clk_rate = clk_get_max_rate(pltfm_host->clk);
 
 	tegra_sdhci_clock_set_parent(sdhci, clk_rate);
 	clk_set_rate(pltfm_host->clk, clk_rate);
@@ -1443,29 +1488,15 @@ static void tegra_sdhci_set_clock(struct sdhci_host *sdhci, unsigned int clock)
 	mutex_unlock(&tegra_host->set_clock_mutex);
 }
 
-static unsigned int get_calibration_offsets(struct sdhci_host *sdhci)
-{
-	struct sdhci_pltfm_host *pltfm_host = sdhci_priv(sdhci);
-	struct sdhci_tegra *tegra_host = pltfm_host->priv;
-	const struct tegra_sdhci_platform_data *plat = tegra_host->plat;
-	unsigned int offsets = 0;
-
-	if (sdhci->mmc->ios.signal_voltage == MMC_SIGNAL_VOLTAGE_330)
-		offsets = plat->calib_3v3_offsets;
-	else if (sdhci->mmc->ios.signal_voltage == MMC_SIGNAL_VOLTAGE_180)
-		offsets = plat->calib_1v8_offsets;
-
-	return offsets;
-}
-
-static void tegra_sdhci_do_calibration(struct sdhci_host *sdhci)
+static void tegra_sdhci_do_calibration(struct sdhci_host *sdhci,
+	unsigned char signal_voltage)
 {
 	unsigned int val;
 	struct sdhci_pltfm_host *pltfm_host = sdhci_priv(sdhci);
 	struct sdhci_tegra *tegra_host = pltfm_host->priv;
 	const struct sdhci_tegra_soc_data *soc_data = tegra_host->soc_data;
 	unsigned int timeout = 10;
-	unsigned int calib_offsets;
+	unsigned int calib_offsets = 0;
 
 	/* No Calibration for sdmmc4 */
 	if (unlikely(soc_data->nvquirks & NVQUIRK_DISABLE_SDMMC4_CALIB) &&
@@ -1487,7 +1518,10 @@ static void tegra_sdhci_do_calibration(struct sdhci_host *sdhci)
 	val |= SDMMC_AUTO_CAL_CONFIG_AUTO_CAL_ENABLE;
 	val |= SDMMC_AUTO_CAL_CONFIG_AUTO_CAL_START;
 	if (unlikely(soc_data->nvquirks & NVQUIRK_SET_CALIBRATION_OFFSETS)) {
-		calib_offsets = get_calibration_offsets(sdhci);
+		if (signal_voltage == MMC_SIGNAL_VOLTAGE_330)
+			calib_offsets = tegra_host->plat->calib_3v3_offsets;
+		else if (signal_voltage == MMC_SIGNAL_VOLTAGE_180)
+			calib_offsets = tegra_host->plat->calib_1v8_offsets;
 		if (calib_offsets) {
 			/* Program Auto cal PD offset(bits 8:14) */
 			val &= ~(0x7F <<
@@ -1678,6 +1712,17 @@ static void sdhci_tegra_set_tap_delay(struct sdhci_host *sdhci,
 	vendor_ctrl = sdhci_readl(sdhci, SDHCI_VNDR_CLK_CTRL);
 	vendor_ctrl &= ~(0xFF << SDHCI_VNDR_CLK_CTRL_TAP_VALUE_SHIFT);
 	vendor_ctrl |= (tap_delay << SDHCI_VNDR_CLK_CTRL_TAP_VALUE_SHIFT);
+	sdhci_writel(sdhci, vendor_ctrl, SDHCI_VNDR_CLK_CTRL);
+}
+
+static void sdhci_tegra_set_trim_delay(struct sdhci_host *sdhci,
+	unsigned int trim_delay)
+{
+	u32 vendor_ctrl;
+
+	vendor_ctrl = sdhci_readl(sdhci, SDHCI_VNDR_CLK_CTRL);
+	vendor_ctrl &= ~(0x1F << SDHCI_VNDR_CLK_CTRL_TRIM_VALUE_SHIFT);
+	vendor_ctrl |= (trim_delay << SDHCI_VNDR_CLK_CTRL_TRIM_VALUE_SHIFT);
 	sdhci_writel(sdhci, vendor_ctrl, SDHCI_VNDR_CLK_CTRL);
 }
 
@@ -1876,8 +1921,8 @@ static int adjust_window_boundaries(struct sdhci_host *sdhci,
 	struct tap_window_data *temp_tap_data)
 {
 	struct tap_window_data *tap_data;
-	int vmin_tap_hole;
-	int vmax_tap_hole;
+	int vmin_tap_hole = 0;
+	int vmax_tap_hole = 0;
 	u8 i = 0;
 
 	for (i = 0; i < tuning_data->num_of_valid_tap_wins; i++) {
@@ -1970,8 +2015,10 @@ static int sdhci_tegra_calculate_best_tap(struct sdhci_host *sdhci,
 
 	curr_vmin = tegra_dvfs_predict_millivolts(pltfm_host->clk,
 		tuning_data->freq_hz);
-	vmin = curr_vmin;
+	if (!curr_vmin)
+		curr_vmin = tegra_host->boot_vcore_mv;
 
+	vmin = curr_vmin;
 	do {
 		SDHCI_TEGRA_DBG("%s: checking for win opening with vmin %d\n",
 			mmc_hostname(sdhci->mmc), vmin);
@@ -1979,6 +2026,8 @@ static int sdhci_tegra_calculate_best_tap(struct sdhci_host *sdhci,
 			(vmin > tegra_host->boot_vcore_mv)) {
 			dev_err(mmc_dev(sdhci->mmc),
 				"No best tap for any vcore range\n");
+			kfree(temp_tap_data);
+			temp_tap_data = NULL;
 			return -EINVAL;
 		}
 
@@ -2011,11 +2060,25 @@ static int sdhci_tegra_calculate_best_tap(struct sdhci_host *sdhci,
 	tuning_data->best_tap_value = best_tap_value;
 	tuning_data->nom_best_tap_value = best_tap_value;
 
-	/* Set the new vmin if there is any change. */
-	if ((tuning_data->best_tap_value >= 0) && (curr_vmin != vmin))
+	/*
+	 * Set the new vmin if there is any change. If dvfs overrides are
+	 * disabled, then print the error message but continue execution
+	 * rather than disabling tuning altogether.
+	 */
+	if ((tuning_data->best_tap_value >= 0) && (curr_vmin != vmin)) {
 		err = tegra_dvfs_set_fmax_at_vmin(pltfm_host->clk,
 			tuning_data->freq_hz, vmin);
-
+		if ((err == -EPERM) || (err == -ENOSYS)) {
+			/*
+			 * tegra_dvfs_set_fmax_at_vmin: will return EPERM or
+			 * ENOSYS, when DVFS override is not enabled, continue
+			 * tuning with default core voltage.
+			 */
+			SDHCI_TEGRA_DBG(
+				"dvfs overrides disabled. Vmin not updated\n");
+			err = 0;
+		}
+	}
 	kfree(temp_tap_data);
 	return err;
 }
@@ -2090,8 +2153,8 @@ static int sdhci_tegra_issue_tuning_cmd(struct sdhci_host *sdhci)
 		err = 0;
 		sdhci->tuning_done = 1;
 	} else {
-		tegra_sdhci_reset(sdhci, SDHCI_RESET_CMD);
 		tegra_sdhci_reset(sdhci, SDHCI_RESET_DATA);
+		tegra_sdhci_reset(sdhci, SDHCI_RESET_CMD);
 		err = -EIO;
 	}
 
@@ -2929,8 +2992,21 @@ static int sdhci_tegra_set_tuning_voltage(struct sdhci_host *sdhci,
 
 	SDHCI_TEGRA_DBG("%s: Setting vcore override %d\n",
 		mmc_hostname(sdhci->mmc), voltage);
-	/* First clear any previous dvfs override settings */
+	/*
+	 * First clear any previous dvfs override settings. If dvfs overrides
+	 * are disabled, then print the error message but continue execution
+	 * rather than failing tuning altogether.
+	 */
 	err = tegra_dvfs_override_core_voltage(pltfm_host->clk, 0);
+	if ((err == -EPERM) || (err == -ENOSYS)) {
+		/*
+		 * tegra_dvfs_override_core_voltage will return EPERM or ENOSYS,
+		 * when DVFS override is not enabled. Continue tuning
+		 * with default core voltage
+		 */
+		SDHCI_TEGRA_DBG("dvfs overrides disabled. Nothing to clear\n");
+		err = 0;
+	}
 	if (!voltage)
 		return err;
 
@@ -2947,8 +3023,20 @@ static int sdhci_tegra_set_tuning_voltage(struct sdhci_host *sdhci,
 			nom_emc_freq_set = true;
 	}
 
+	/*
+	 * If dvfs overrides are disabled, then print the error message but
+	 * continue tuning execution rather than failing tuning altogether.
+	 */
 	err = tegra_dvfs_override_core_voltage(pltfm_host->clk, voltage);
-	if (err)
+	if ((err == -EPERM) || (err == -ENOSYS)) {
+		/*
+		 * tegra_dvfs_override_core_voltage will return EPERM or ENOSYS,
+		 * when DVFS override is not enabled. Continue tuning
+		 * with default core voltage
+		 */
+		SDHCI_TEGRA_DBG("dvfs overrides disabled. No overrides set\n");
+		err = 0;
+	} else if (err)
 		dev_err(mmc_dev(sdhci->mmc),
 			"failed to set vcore override %dmv\n", voltage);
 
@@ -3184,6 +3272,9 @@ static int tegra_sdhci_suspend(struct sdhci_host *sdhci)
 	struct sdhci_pltfm_host *pltfm_host = sdhci_priv(sdhci);
 	struct sdhci_tegra *tegra_host = pltfm_host->priv;
 	int err = 0;
+	struct platform_device *pdev = to_platform_device(mmc_dev(sdhci->mmc));
+	const struct tegra_sdhci_platform_data *plat;
+	unsigned int cd_irq;
 
 	tegra_sdhci_set_clock(sdhci, 0);
 
@@ -3195,6 +3286,18 @@ static int tegra_sdhci_suspend(struct sdhci_host *sdhci)
 			dev_err(mmc_dev(sdhci->mmc),
 			"Regulators disable in suspend failed %d\n", err);
 	}
+	plat = pdev->dev.platform_data;
+	if (plat && gpio_is_valid(plat->cd_gpio)) {
+		if (!plat->cd_wakeup_incapable) {
+			/* Enable wake irq at end of suspend */
+			cd_irq = gpio_to_irq(plat->cd_gpio);
+			err = enable_irq_wake(cd_irq);
+			if (err < 0)
+				dev_err(mmc_dev(sdhci->mmc),
+				"SD card wake-up event registration for irq=%d failed with error: %d\n",
+				cd_irq, err);
+		}
+	}
 	return err;
 }
 
@@ -3204,12 +3307,19 @@ static int tegra_sdhci_resume(struct sdhci_host *sdhci)
 	struct sdhci_tegra *tegra_host = pltfm_host->priv;
 	struct platform_device *pdev;
 	struct tegra_sdhci_platform_data *plat;
+	unsigned int signal_voltage = 0;
 	int err;
+	unsigned int cd_irq;
 
 	pdev = to_platform_device(mmc_dev(sdhci->mmc));
 	plat = pdev->dev.platform_data;
 
-	if (gpio_is_valid(plat->cd_gpio)) {
+	if (plat && gpio_is_valid(plat->cd_gpio)) {
+		/* disable wake capability at start of resume */
+		if (!plat->cd_wakeup_incapable) {
+			cd_irq = gpio_to_irq(plat->cd_gpio);
+			disable_irq_wake(cd_irq);
+		}
 		tegra_host->card_present =
 			(gpio_get_value_cansleep(plat->cd_gpio) == 0);
 	}
@@ -3227,13 +3337,13 @@ static int tegra_sdhci_resume(struct sdhci_host *sdhci)
 			return err;
 		}
 		if (tegra_host->vdd_io_reg) {
-			if (plat->mmc_data.ocr_mask &
-						SDHOST_1V8_OCR_MASK)
-				tegra_sdhci_signal_voltage_switch(sdhci,
-						MMC_SIGNAL_VOLTAGE_180);
+			if (plat && (plat->mmc_data.ocr_mask &
+				SDHOST_1V8_OCR_MASK))
+				signal_voltage = MMC_SIGNAL_VOLTAGE_180;
 			else
-				tegra_sdhci_signal_voltage_switch(sdhci,
-						MMC_SIGNAL_VOLTAGE_330);
+				signal_voltage = MMC_SIGNAL_VOLTAGE_330;
+			tegra_sdhci_signal_voltage_switch(sdhci,
+				signal_voltage);
 		}
 	}
 
@@ -3242,6 +3352,8 @@ static int tegra_sdhci_resume(struct sdhci_host *sdhci)
 		tegra_sdhci_reset(sdhci, SDHCI_RESET_ALL);
 		sdhci_writeb(sdhci, SDHCI_POWER_ON, SDHCI_POWER_CONTROL);
 		sdhci->pwr = 0;
+
+		tegra_sdhci_do_calibration(sdhci, signal_voltage);
 	}
 
 	return 0;
@@ -3363,11 +3475,134 @@ static int set_active_load_high_threshold(void *data, u64 value)
 	return 0;
 }
 
+static int show_disableclkgating_value(void *data, u64 *value)
+{
+	struct sdhci_host *host = (struct sdhci_host *)data;
+	if (host != NULL) {
+		struct sdhci_pltfm_host *pltfm_host = sdhci_priv(host);
+		struct sdhci_tegra *tegra_host = pltfm_host->priv;
+		if (tegra_host != NULL)
+			*value = tegra_host->dbg_cfg.clk_ungated;
+	}
+	return 0;
+}
+
+static int set_disableclkgating_value(void *data, u64 value)
+{
+	struct sdhci_host *host = (struct sdhci_host *)data;
+	if (host != NULL) {
+		struct sdhci_pltfm_host *pltfm_host = sdhci_priv(host);
+		if (pltfm_host != NULL) {
+			struct sdhci_tegra *tegra_host = pltfm_host->priv;
+			/* Set the CAPS2 register to reflect
+			 * the clk gating value
+			 */
+			if (tegra_host != NULL) {
+				if (value) {
+					host->mmc->ops->set_ios(host->mmc,
+						&host->mmc->ios);
+					tegra_host->dbg_cfg.clk_ungated = true;
+					host->mmc->caps2 &=
+						~MMC_CAP2_CLOCK_GATING;
+				} else {
+					tegra_host->dbg_cfg.clk_ungated = false;
+					host->mmc->caps2 |=
+						MMC_CAP2_CLOCK_GATING;
+				}
+			}
+		}
+	}
+	return 0;
+}
+
+static int set_trim_override_value(void *data, u64 value)
+{
+	struct sdhci_host *host = (struct sdhci_host *)data;
+	if (host != NULL) {
+		struct sdhci_pltfm_host *pltfm_host = sdhci_priv(host);
+		if (pltfm_host != NULL) {
+			struct sdhci_tegra *tegra_host = pltfm_host->priv;
+			if (tegra_host != NULL) {
+				/* Make sure clock gating is disabled */
+				if ((tegra_host->dbg_cfg.clk_ungated) &&
+				(tegra_host->clk_enabled)) {
+					sdhci_tegra_set_trim_delay(host, value);
+					tegra_host->dbg_cfg.trim_val =
+						value;
+				} else {
+					pr_info("%s: Disable clock gating before setting value\n",
+						mmc_hostname(host->mmc));
+				}
+			}
+		}
+	}
+	return 0;
+}
+
+static int show_trim_override_value(void *data, u64 *value)
+{
+	struct sdhci_host *host = (struct sdhci_host *)data;
+	if (host != NULL) {
+		struct sdhci_pltfm_host *pltfm_host = sdhci_priv(host);
+		if (pltfm_host != NULL) {
+			struct sdhci_tegra *tegra_host = pltfm_host->priv;
+			if (tegra_host != NULL)
+				*value = tegra_host->dbg_cfg.trim_val;
+		}
+	}
+	return 0;
+}
+
+static int show_tap_override_value(void *data, u64 *value)
+{
+	struct sdhci_host *host = (struct sdhci_host *)data;
+	if (host != NULL) {
+		struct sdhci_pltfm_host *pltfm_host = sdhci_priv(host);
+		if (pltfm_host != NULL) {
+			struct sdhci_tegra *tegra_host = pltfm_host->priv;
+			if (tegra_host != NULL)
+				*value = tegra_host->dbg_cfg.tap_val;
+		}
+	}
+	return 0;
+}
+
+static int set_tap_override_value(void *data, u64 value)
+{
+	struct sdhci_host *host = (struct sdhci_host *)data;
+	if (host != NULL) {
+		struct sdhci_pltfm_host *pltfm_host = sdhci_priv(host);
+		if (pltfm_host != NULL) {
+			struct sdhci_tegra *tegra_host = pltfm_host->priv;
+			if (tegra_host != NULL) {
+				/* Make sure clock gating is disabled */
+				if ((tegra_host->dbg_cfg.clk_ungated) &&
+				(tegra_host->clk_enabled)) {
+					sdhci_tegra_set_tap_delay(host, value);
+					tegra_host->dbg_cfg.tap_val = value;
+				} else {
+					pr_info("%s: Disable clock gating before setting value\n",
+						mmc_hostname(host->mmc));
+				}
+			}
+		}
+	}
+	return 0;
+}
 DEFINE_SIMPLE_ATTRIBUTE(sdhci_polling_period_fops, show_polling_period,
 		set_polling_period, "%llu\n");
 DEFINE_SIMPLE_ATTRIBUTE(sdhci_active_load_high_threshold_fops,
 		show_active_load_high_threshold,
 		set_active_load_high_threshold, "%llu\n");
+DEFINE_SIMPLE_ATTRIBUTE(sdhci_disable_clkgating_fops,
+		show_disableclkgating_value,
+		set_disableclkgating_value, "%llu\n");
+DEFINE_SIMPLE_ATTRIBUTE(sdhci_override_trim_data_fops,
+		show_trim_override_value,
+		set_trim_override_value, "%llu\n");
+DEFINE_SIMPLE_ATTRIBUTE(sdhci_override_tap_data_fops,
+		show_tap_override_value,
+		set_tap_override_value, "%llu\n");
 
 static void sdhci_tegra_error_stats_debugfs(struct sdhci_host *host)
 {
@@ -3411,6 +3646,43 @@ static void sdhci_tegra_error_stats_debugfs(struct sdhci_host *host)
 		saved_line = __LINE__;
 		goto err_node;
 	}
+
+	dfs_root = debugfs_create_dir("override_data", root);
+	if (IS_ERR_OR_NULL(dfs_root)) {
+		saved_line = __LINE__;
+		goto err_node;
+	}
+
+	if (!debugfs_create_file("clk_gate_disabled", 0644,
+				dfs_root, (void *)host,
+				&sdhci_disable_clkgating_fops)) {
+		saved_line = __LINE__;
+		goto err_node;
+	}
+
+	if (!debugfs_create_file("tap_value", 0644,
+				dfs_root, (void *)host,
+				&sdhci_override_tap_data_fops)) {
+		saved_line = __LINE__;
+		goto err_node;
+	}
+
+	if (!debugfs_create_file("trim_value", 0644,
+				dfs_root, (void *)host,
+				&sdhci_override_trim_data_fops)) {
+		saved_line = __LINE__;
+		goto err_node;
+	}
+	if (IS_QUIRKS2_DELAYED_CLK_GATE(host)) {
+		host->clk_gate_tmout_ticks = -1;
+		if (!debugfs_create_u32("clk_gate_tmout_ticks",
+			S_IRUGO | S_IWUSR,
+			root, (u32 *)&host->clk_gate_tmout_ticks)) {
+			saved_line = __LINE__;
+			goto err_node;
+		}
+	}
+
 	return;
 
 err_node:
@@ -3597,6 +3869,16 @@ void tegra_sdhci_ios_config_exit(struct sdhci_host *sdhci, struct mmc_ios *ios)
 		tegra_sdhci_set_clock(sdhci, 0);
 }
 
+static int tegra_sdhci_get_drive_strength(struct sdhci_host *sdhci,
+		unsigned int max_dtr, int host_drv, int card_drv)
+{
+	struct sdhci_pltfm_host *pltfm_host = sdhci_priv(sdhci);
+	struct sdhci_tegra *tegra_host = pltfm_host->priv;
+	const struct tegra_sdhci_platform_data *plat = tegra_host->plat;
+
+	return plat->default_drv_type;
+}
+
 static const struct sdhci_ops tegra_sdhci_ops = {
 	.get_ro     = tegra_sdhci_get_ro,
 	.get_cd     = tegra_sdhci_get_cd,
@@ -3622,6 +3904,7 @@ static const struct sdhci_ops tegra_sdhci_ops = {
 	.dfs_gov_init		= sdhci_tegra_freq_gov_init,
 	.dfs_gov_get_target_freq	= sdhci_tegra_get_target_freq,
 #endif
+	.get_drive_strength	= tegra_sdhci_get_drive_strength,
 };
 
 static struct sdhci_pltfm_data sdhci_tegra11_pdata = {
@@ -3651,7 +3934,9 @@ static struct sdhci_tegra_soc_data soc_data_tegra11 = {
 static struct sdhci_pltfm_data sdhci_tegra12_pdata = {
 	.quirks = TEGRA_SDHCI_QUIRKS,
 	.quirks2 = TEGRA_SDHCI_QUIRKS2 |
-		SDHCI_QUIRK2_SUPPORT_64BIT_DMA,
+		SDHCI_QUIRK2_HOST_OFF_CARD_ON |
+		SDHCI_QUIRK2_SUPPORT_64BIT_DMA |
+		SDHCI_QUIRK2_USE_64BIT_ADDR,
 	.ops  = &tegra_sdhci_ops,
 };
 
@@ -3773,6 +4058,17 @@ static int sdhci_tegra_probe(struct platform_device *pdev)
 		rc = -ENXIO;
 		goto err_no_plat;
 	}
+
+	/* FIXME: This is for until dma-mask binding is supported in DT.
+	 *        Set coherent_dma_mask for each Tegra SKUs.
+	 *        If dma_mask is NULL, set it to coherent_dma_mask. */
+	if (soc_data == &soc_data_tegra11)
+		pdev->dev.coherent_dma_mask = DMA_BIT_MASK(32);
+	else
+		pdev->dev.coherent_dma_mask = DMA_BIT_MASK(64);
+
+	if (!pdev->dev.dma_mask)
+		pdev->dev.dma_mask = &pdev->dev.coherent_dma_mask;
 
 	tegra_host = devm_kzalloc(&pdev->dev, sizeof(*tegra_host), GFP_KERNEL);
 	if (!tegra_host) {
@@ -4081,13 +4377,6 @@ static int sdhci_tegra_probe(struct platform_device *pdev)
 			dev_err(mmc_dev(host->mmc), "request irq error\n");
 			goto err_cd_irq_req;
 		}
-		if (!plat->cd_wakeup_incapable) {
-			rc = enable_irq_wake(gpio_to_irq(plat->cd_gpio));
-			if (rc < 0)
-				dev_err(mmc_dev(host->mmc),
-					"SD card wake-up event registration "
-					"failed with error: %d\n", rc);
-		}
 	}
 	sdhci_tegra_error_stats_debugfs(host);
 	device_create_file(&pdev->dev, &dev_attr_cmd_state);
@@ -4100,6 +4389,14 @@ static int sdhci_tegra_probe(struct platform_device *pdev)
 			tegra_sdhci_reboot_notify;
 		register_reboot_notifier(&tegra_host->reboot_notify);
 	}
+#ifdef CONFIG_DEBUG_FS
+	tegra_host->dbg_cfg.tap_val =
+		plat->tap_delay;
+	tegra_host->dbg_cfg.trim_val =
+		plat->ddr_trim_delay;
+	tegra_host->dbg_cfg.clk_ungated =
+		plat->disable_clock_gate;
+#endif
 	return 0;
 
 err_cd_irq_req:
@@ -4141,8 +4438,6 @@ static int sdhci_tegra_remove(struct platform_device *pdev)
 	int rc = 0;
 
 	sdhci_remove_host(host, dead);
-
-	disable_irq_wake(gpio_to_irq(plat->cd_gpio));
 
 	rc = tegra_sdhci_configure_regulators(tegra_host, CONFIG_REG_DIS, 0, 0);
 	if (rc)

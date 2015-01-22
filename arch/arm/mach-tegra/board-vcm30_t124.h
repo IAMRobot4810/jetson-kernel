@@ -1,7 +1,7 @@
 /*
  * arch/arm/mach-tegra/board-vcm30_t124.h
  *
- * Copyright (c) 2013, NVIDIA CORPORATION.  All rights reserved.
+ * Copyright (c) 2013-2014, NVIDIA CORPORATION.  All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify it
  * under the terms and conditions of the GNU General Public License,
@@ -19,7 +19,6 @@
 #ifndef _MACH_TEGRA_BOARD_VCM30_T124_H
 #define _MACH_TEGRA_BOARD_VCM30_T124_H
 
-#include <linux/mfd/as3722-plat.h>
 #include <mach/gpio-tegra.h>
 #include <mach/irqs.h>
 #include <linux/mfd/max77663-core.h>
@@ -33,15 +32,6 @@ int vcm30_t124_suspend_init(void);
 int vcm30_t124_pmon_init(void);
 int vcm30_t124_panel_init(void);
 int vcm30_t124_pca953x_init(void);
-
-/* FIXME: Needed? */
-#define AS3722_GPIO_BASE	TEGRA_NR_GPIOS
-#define AS3722_GPIO_END	(AS3722_GPIO_BASE + AS3722_NUM_GPIO)
-
-/* PMU_TCA6416 GPIOs */
-#define PMU_TCA6416_GPIO_BASE   (AS3722_GPIO_END)
-#define PMU_TCA6416_GPIO(x)     (PMU_TCA6416_GPIO_BASE + x)
-#define PMU_TCA6416_NR_GPIOS    18
 
 #define UTMI1_PORT_OWNER_XUSB   0x1
 #define UTMI2_PORT_OWNER_XUSB   0x2
@@ -78,28 +68,41 @@ GPIO, also the GPIO is same for T114 interposer and T124*/
 #define MAX77663_GPIO_END       (MAX77663_GPIO_BASE + MAX77663_GPIO_NR)
 
 /* PCA953X - MISC SYSTEM IO */
-#define PCA953X_MISCIO_GPIO_BASE        (MAX77663_GPIO_END + 1)
-#define MISCIO_BT_RST_GPIO              (PCA953X_MISCIO_GPIO_BASE + 0)
-#define MISCIO_GPS_RST_GPIO             (PCA953X_MISCIO_GPIO_BASE + 1)
-#define MISCIO_GPS_EN_GPIO              (PCA953X_MISCIO_GPIO_BASE + 2)
-#define MISCIO_WF_EN_GPIO               (PCA953X_MISCIO_GPIO_BASE + 3)
-#define MISCIO_WF_RST_GPIO              (PCA953X_MISCIO_GPIO_BASE + 4)
-#define MISCIO_BT_EN_GPIO               (PCA953X_MISCIO_GPIO_BASE + 5)
+#define PCA953X_MISCIO_0_GPIO_BASE        (MAX77663_GPIO_END + 1)
+#define MISCIO_BT_RST_GPIO              (PCA953X_MISCIO_0_GPIO_BASE + 0)
+#define MISCIO_GPS_RST_GPIO             (PCA953X_MISCIO_0_GPIO_BASE + 1)
+#define MISCIO_GPS_EN_GPIO              (PCA953X_MISCIO_0_GPIO_BASE + 2)
+#define MISCIO_WF_EN_GPIO               (PCA953X_MISCIO_0_GPIO_BASE + 3)
+#define MISCIO_WF_RST_GPIO              (PCA953X_MISCIO_0_GPIO_BASE + 4)
+#define MISCIO_BT_EN_GPIO               (PCA953X_MISCIO_0_GPIO_BASE + 5)
 /* GPIO6 is not used */
-#define MISCIO_NOT_USED0                (PCA953X_MISCIO_GPIO_BASE + 6)
-#define MISCIO_BT_WAKEUP_GPIO           (PCA953X_MISCIO_GPIO_BASE + 7)
-#define MISCIO_FAN_SEL_GPIO             (PCA953X_MISCIO_GPIO_BASE + 8)
-#define MISCIO_EN_MISC_BUF_GPIO         (PCA953X_MISCIO_GPIO_BASE + 9)
-#define MISCIO_EN_MSATA_GPIO            (PCA953X_MISCIO_GPIO_BASE + 10)
-#define MISCIO_EN_SDCARD_GPIO           (PCA953X_MISCIO_GPIO_BASE + 11)
+#define MISCIO_NOT_USED0                (PCA953X_MISCIO_0_GPIO_BASE + 6)
+#define MISCIO_BT_WAKEUP_GPIO           (PCA953X_MISCIO_0_GPIO_BASE + 7)
+#define MISCIO_FAN_SEL_GPIO             (PCA953X_MISCIO_0_GPIO_BASE + 8)
+#define MISCIO_EN_MISC_BUF_GPIO         (PCA953X_MISCIO_0_GPIO_BASE + 9)
+#define MISCIO_EN_MSATA_GPIO            (PCA953X_MISCIO_0_GPIO_BASE + 10)
+#define MISCIO_EN_SDCARD_GPIO           (PCA953X_MISCIO_0_GPIO_BASE + 11)
 /* GPIO12 is not used */
-#define MISCIO_NOT_USED1                (PCA953X_MISCIO_GPIO_BASE + 12)
-#define MISCIO_ABB_RST_GPIO             (PCA953X_MISCIO_GPIO_BASE + 13)
-#define MISCIO_USER_LED2_GPIO           (PCA953X_MISCIO_GPIO_BASE + 14)
-#define MISCIO_USER_LED1_GPIO           (PCA953X_MISCIO_GPIO_BASE + 15)
-#define PCA953X_MISCIO_GPIO_END         (PCA953X_MISCIO_GPIO_BASE + 16)
+#define MISCIO_NOT_USED1                (PCA953X_MISCIO_0_GPIO_BASE + 12)
+#define MISCIO_ABB_RST_GPIO             (PCA953X_MISCIO_0_GPIO_BASE + 13)
+#define MISCIO_USER_LED2_GPIO           (PCA953X_MISCIO_0_GPIO_BASE + 14)
+#define MISCIO_USER_LED1_GPIO           (PCA953X_MISCIO_0_GPIO_BASE + 15)
+#define PCA953X_MISCIO_0_GPIO_END	(PCA953X_MISCIO_0_GPIO_BASE + 15)
+
+#define PCA953X_MISCIO_1_GPIO_BASE	(PCA953X_MISCIO_0_GPIO_END + 1)
+#define MISCIO_MUX_DAP_D_SEL		(PCA953X_MISCIO_1_GPIO_BASE + 0)
+#define MISCIO_MUX_DAP_D_EN		(PCA953X_MISCIO_1_GPIO_BASE + 1)
+#define PCA953X_MISCIO_1_GPIO_END	(PCA953X_MISCIO_1_GPIO_BASE + 15)
 
 /* PCA953X I2C IO expander bus addresses */
-#define PCA953X_MISCIO_ADDR             0x75
+#define PCA953X_MISCIO_0_ADDR		0x75
+#define PCA953X_MISCIO_1_ADDR		0x76
+
+/* Thermal monitor data */
+#define DELTA_TEMP 4000
+#define DELTA_TIME 2000
+#define REMT_OFFSET 8000
+#define I2C_ADDR_TMP411 0x4c
+#define I2C_BUS_TMP411 1
 
 #endif

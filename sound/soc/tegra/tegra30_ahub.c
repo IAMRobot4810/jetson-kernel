@@ -216,6 +216,7 @@ int tegra30_ahub_rx_fifo_is_empty(int i2s_id)
 	val &= mask;
 	return val;
 }
+EXPORT_SYMBOL(tegra30_ahub_rx_fifo_is_empty);
 
 int tegra30_ahub_tx_fifo_is_empty(int i2s_id)
 {
@@ -227,6 +228,7 @@ int tegra30_ahub_tx_fifo_is_empty(int i2s_id)
 
 	return val;
 }
+EXPORT_SYMBOL(tegra30_ahub_tx_fifo_is_empty);
 
 
 int tegra30_ahub_dam_ch0_is_enabled(int dam_id)
@@ -280,6 +282,7 @@ int tegra30_ahub_dam_ch0_is_empty(int dam_id)
 
 	return val;
 }
+EXPORT_SYMBOL(tegra30_ahub_dam_ch0_is_empty);
 
 int tegra30_ahub_dam_ch1_is_empty(int dam_id)
 {
@@ -292,6 +295,7 @@ int tegra30_ahub_dam_ch1_is_empty(int dam_id)
 
 	return val;
 }
+EXPORT_SYMBOL(tegra30_ahub_dam_ch1_is_empty);
 
 int tegra30_ahub_dam_tx_is_empty(int dam_id)
 {
@@ -304,6 +308,7 @@ int tegra30_ahub_dam_tx_is_empty(int dam_id)
 
 	return val;
 }
+EXPORT_SYMBOL(tegra30_ahub_dam_tx_is_empty);
 
 
 int tegra30_ahub_set_rx_fifo_pack_mode(enum tegra30_ahub_rxcif rxcif,
@@ -780,7 +785,6 @@ static int tegra30_ahub_probe(struct platform_device *pdev)
 	struct resource *res0, *res1, *region;
 	u32 of_dma[2];
 	void __iomem *regs_apbif, *regs_ahub;
-	int clkm_rate;
 	int ret = 0;
 
 	if (ahub)
@@ -820,12 +824,6 @@ static int tegra30_ahub_probe(struct platform_device *pdev)
 		ret = PTR_ERR(ahub->clk_d_audio);
 		goto err;
 	}
-	clkm_rate = clk_get_rate(clk_get_parent(ahub->clk_d_audio));
-
-	while (clkm_rate > 13000000)
-		clkm_rate >>= 1;
-
-	clk_set_rate(ahub->clk_d_audio,clkm_rate);
 
 	ahub->clk_apbif = clk_get(&pdev->dev, "apbif");
 	if (IS_ERR(ahub->clk_apbif)) {

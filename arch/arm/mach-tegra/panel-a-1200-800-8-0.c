@@ -1,7 +1,7 @@
 /*
  * arch/arm/mach-tegra/panel-a-1200-800-8-0.c
  *
- * Copyright (c) 2013, NVIDIA CORPORATION.  All rights reserved.
+ * Copyright (c) 2013-2014, NVIDIA CORPORATION.  All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify it
  * under the terms and conditions of the GNU General Public License,
@@ -87,9 +87,11 @@ static u8 enable_pwr[] = {0xC3, 0x40, 0x00, 0x28};
 static struct tegra_dsi_cmd dsi_a_1200_800_8_0_init_cmd[] = {
 	DSI_CMD_VBLANK_LONG(MIPI_DSI_DCS_LONG_WRITE, test_key),
 	DSI_DLY_MS(5),
-	DSI_CMD_VBLANK_SHORT(DSI_DCS_WRITE_0_PARAM, DSI_DCS_EXIT_SLEEP_MODE, 0x0),
+	DSI_CMD_VBLANK_SHORT(DSI_DCS_WRITE_0_PARAM, DSI_DCS_EXIT_SLEEP_MODE,
+							0x0, CMD_NOT_CLUBBED),
 	DSI_DLY_MS(5),
-	DSI_CMD_VBLANK_SHORT(DSI_DCS_WRITE_0_PARAM, DSI_DCS_SET_DISPLAY_ON, 0x0),
+	DSI_CMD_VBLANK_SHORT(DSI_DCS_WRITE_0_PARAM, DSI_DCS_SET_DISPLAY_ON,
+							0x0, CMD_NOT_CLUBBED),
 	DSI_DLY_MS(10),
 	DSI_CMD_VBLANK_LONG(MIPI_DSI_DCS_LONG_WRITE, enable_pwr),
 	DSI_DLY_MS(170),
@@ -112,6 +114,7 @@ static struct tegra_dsi_out dsi_a_1200_800_8_0_pdata = {
 	.video_clock_mode = TEGRA_DSI_VIDEO_CLOCK_CONTINUOUS,
 	.dsi_init_cmd = dsi_a_1200_800_8_0_init_cmd,
 	.n_init_cmd = ARRAY_SIZE(dsi_a_1200_800_8_0_init_cmd),
+	.boardinfo = {BOARD_P1761, 0, 0, 0},
 };
 
 static int dsi_a_1200_800_8_0_regulator_get(struct device *dev)
@@ -486,7 +489,6 @@ static struct platform_device __maybe_unused
 
 static struct platform_device __maybe_unused
 			*dsi_a_1200_800_8_0_bl_devices[] __initdata = {
-	&tegra_pwfm_device,
 	&dsi_a_1200_800_8_0_bl_device,
 };
 
@@ -534,17 +536,21 @@ dsi_a_1200_800_8_0_sd_settings_init(struct tegra_dc_sd_settings *settings)
 	settings->bl_device_name = "pwm-backlight";
 }
 
+#ifdef CONFIG_TEGRA_DC_CMU
 static void dsi_a_1200_800_8_0_cmu_init(struct tegra_dc_platform_data *pdata)
 {
 	pdata->cmu = &dsi_a_1200_800_8_0_cmu;
 }
+#endif
 
 struct tegra_panel __initdata dsi_a_1200_800_8_0 = {
 	.init_sd_settings = dsi_a_1200_800_8_0_sd_settings_init,
 	.init_dc_out = dsi_a_1200_800_8_0_dc_out_init,
 	.init_fb_data = dsi_a_1200_800_8_0_fb_data_init,
 	.register_bl_dev = dsi_a_1200_800_8_0_register_bl_dev,
+#ifdef CONFIG_TEGRA_DC_CMU
 	.init_cmu_data = dsi_a_1200_800_8_0_cmu_init,
+#endif
 	.set_disp_device = dsi_a_1200_800_8_0_set_disp_device,
 };
 EXPORT_SYMBOL(dsi_a_1200_800_8_0);

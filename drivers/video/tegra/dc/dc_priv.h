@@ -42,9 +42,9 @@
 #define WIN_ALL_ACT_REQ (WIN_A_ACT_REQ | WIN_B_ACT_REQ | WIN_C_ACT_REQ)
 #endif
 
-static inline void tegra_dc_io_start(struct tegra_dc *dc)
+static inline int tegra_dc_io_start(struct tegra_dc *dc)
 {
-	nvhost_module_busy_ext(dc->ndev);
+	return nvhost_module_busy_ext(dc->ndev);
 }
 
 static inline void tegra_dc_io_end(struct tegra_dc *dc)
@@ -331,14 +331,24 @@ static inline bool tegra_dc_is_powered(struct tegra_dc *dc)
 #endif
 
 #ifdef CONFIG_ARCH_DMA_ADDR_T_64BIT
-static inline u32 tegra_dc_reg_l32(dma_addr_t reg)
+static inline u32 tegra_dc_reg_l32(dma_addr_t v)
 {
-	return reg & 0xffffffff;
+	return v & 0xffffffff;
 }
 
-static inline u32 tegra_dc_reg_h32(dma_addr_t reg)
+static inline u32 tegra_dc_reg_h32(dma_addr_t v)
 {
-	return reg >> 32;
+	return v >> 32;
+}
+#else
+static inline u32 tegra_dc_reg_l32(dma_addr_t v)
+{
+	return v;
+}
+
+static inline u32 tegra_dc_reg_h32(dma_addr_t v)
+{
+	return 0;
 }
 #endif
 extern struct tegra_dc_out_ops tegra_dc_rgb_ops;
@@ -349,6 +359,9 @@ extern struct tegra_dc_out_ops tegra_dc_dp_ops;
 #endif
 #ifdef CONFIG_TEGRA_LVDS
 extern struct tegra_dc_out_ops tegra_dc_lvds_ops;
+#endif
+#ifdef CONFIG_TEGRA_NVSR
+extern struct tegra_dc_out_ops tegra_dc_nvsr_ops;
 #endif
 
 /* defined in dc_sysfs.c, used by dc.c */
@@ -378,9 +391,24 @@ void tegra_dc_clk_disable(struct tegra_dc *dc);
 void tegra_dc_get(struct tegra_dc *dc);
 void tegra_dc_put(struct tegra_dc *dc);
 
-/* defined in dc.c, used in window.c */
+/* defined in dc.c, used in tegra_adf.c */
 void tegra_dc_hold_dc_out(struct tegra_dc *dc);
 void tegra_dc_release_dc_out(struct tegra_dc *dc);
+
+/* defined in dc.c, used in ext/dev.c */
+void tegra_dc_call_flip_callback(void);
+
+/* defined in dc.c, used in sor.c */
+unsigned long tegra_dc_poll_register(struct tegra_dc *dc,
+u32 reg, u32 mask, u32 exp_val, u32 poll_interval_us,
+u32 timeout_ms);
+
+/* defined in dc.c, used in ext/dev.c */
+int tegra_dc_config_frame_end_intr(struct tegra_dc *dc, bool enable);
+
+/* defined in dc.c, used in dsi.c */
+int _tegra_dc_wait_for_frame_end(struct tegra_dc *dc,
+	u32 timeout_ms);
 
 /* defined in bandwidth.c, used in dc.c */
 void tegra_dc_clear_bandwidth(struct tegra_dc *dc);
@@ -401,7 +429,8 @@ int tegra_dc_update_mode(struct tegra_dc *dc);
 /* defined in clock.c, used in dc.c, rgb.c, dsi.c and hdmi.c */
 void tegra_dc_setup_clk(struct tegra_dc *dc, struct clk *clk);
 unsigned long tegra_dc_pclk_round_rate(struct tegra_dc *dc, int pclk);
-unsigned long tegra_dc_pclk_predict_rate(struct clk *parent, int pclk);
+unsigned long tegra_dc_pclk_predict_rate(
+	int out_type, struct clk *parent, int pclk);
 
 /* defined in lut.c, used in dc.c */
 void tegra_dc_init_lut_defaults(struct tegra_dc_lut *lut);
@@ -423,4 +452,11 @@ int tegra_dc_update_cmu(struct tegra_dc *dc, struct tegra_dc_cmu *cmu);
 struct tegra_dc_platform_data
 	*of_dc_parse_platform_data(struct platform_device *ndev);
 
+/* defined in cursor.c, used in dc.c and ext/cursor.c */
+int tegra_dc_cursor_image(struct tegra_dc *dc, u32 format, unsigned size,
+	u32 fg, u32 bg, dma_addr_t phys_addr);
+int tegra_dc_cursor_set(struct tegra_dc *dc, bool enable, int x, int y);
+int tegra_dc_cursor_clip(struct tegra_dc *dc, unsigned clip);
+int tegra_dc_cursor_suspend(struct tegra_dc *dc);
+int tegra_dc_cursor_resume(struct tegra_dc *dc);
 #endif

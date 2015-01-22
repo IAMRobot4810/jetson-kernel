@@ -3,7 +3,7 @@
  *
  * Generic ADC thermal driver
  *
- * Copyright (c) 2013, NVIDIA Corporation. All rights reserved.
+ * Copyright (c) 2013-2014, NVIDIA Corporation. All rights reserved.
  *
  * Author: Jinyoung Park <jinyoungp@nvidia.com>
  *
@@ -108,8 +108,48 @@ static int gadc_thermal_read_channel(struct gadc_thermal_driver_data *drvdata,
 	return ret;
 }
 
-static int gadc_thermal_get_temp(struct thermal_zone_device *tz,
-				 unsigned long *temp)
+static int gadc_thermal_bind(struct thermal_zone_device *tz,
+			     struct thermal_cooling_device *cdev)
+{
+	struct gadc_thermal_driver_data *drvdata = tz->devdata;
+	struct thermal_trip_info *trip_state;
+	int i, ret;
+
+	for (i = 0; i < drvdata->pdata->num_trips; i++) {
+		trip_state = &drvdata->pdata->trips[i];
+		if (trip_state->cdev_type &&
+		    !strncmp(trip_state->cdev_type, cdev->type,
+			     THERMAL_NAME_LENGTH)) {
+			ret = thermal_zone_bind_cooling_device(tz, i, cdev,
+					trip_state->upper, trip_state->lower);
+			if (ret < 0)
+				return ret;
+		}
+	}
+	return 0;
+}
+
+static int gadc_thermal_unbind(struct thermal_zone_device *tz,
+			       struct thermal_cooling_device *cdev)
+{
+	struct gadc_thermal_driver_data *drvdata = tz->devdata;
+	struct thermal_trip_info *trip_state;
+	int i, ret;
+
+	for (i = 0; i < drvdata->pdata->num_trips; i++) {
+		trip_state = &drvdata->pdata->trips[i];
+		if (trip_state->cdev_type &&
+		    !strncmp(trip_state->cdev_type, cdev->type,
+			     THERMAL_NAME_LENGTH)) {
+			ret = thermal_zone_unbind_cooling_device(tz, i, cdev);
+			if (ret < 0)
+				return ret;
+		}
+	}
+	return 0;
+}
+
+static int gadc_thermal_get_temp(struct thermal_zone_device *tz, long *temp)
 {
 	struct gadc_thermal_driver_data *drvdata = tz->devdata;
 	int val = 0, val2 = 0;
@@ -133,11 +173,98 @@ static int gadc_thermal_get_temp(struct thermal_zone_device *tz,
 	return 0;
 }
 
+static int gadc_thermal_get_trip_type(struct thermal_zone_device *tz, int trip,
+				      enum thermal_trip_type *type)
+{
+	struct gadc_thermal_driver_data *drvdata = tz->devdata;
+	struct thermal_trip_info *trip_state = &drvdata->pdata->trips[trip];
+
+	*type = trip_state->trip_type;
+	return 0;
+}
+
+static int gadc_thermal_get_trip_temp(struct thermal_zone_device *tz, int trip,
+				      long *temp)
+{
+	struct gadc_thermal_driver_data *drvdata = tz->devdata;
+	struct thermal_trip_info *trip_state = &drvdata->pdata->trips[trip];
+	long zone_temp = tz->temperature;
+	long trip_temp = trip_state->trip_temp;
+	long hysteresis = trip_state->hysteresis;
+
+	if (zone_temp >= trip_temp) {
+		trip_temp -= hysteresis;
+		trip_state->tripped = true;
+	} else if (trip_state->tripped) {
+		trip_temp -= hysteresis;
+		if (zone_temp < trip_temp)
+			trip_state->tripped = false;
+	}
+
+	*temp = trip_temp;
+	return 0;
+}
+
+static int gadc_thermal_set_trip_temp(struct thermal_zone_device *tz, int trip,
+				      long temp)
+{
+	struct gadc_thermal_driver_data *drvdata = tz->devdata;
+	struct thermal_trip_info *trip_state = &drvdata->pdata->trips[trip];
+
+	trip_state->trip_temp = temp;
+	return 0;
+}
+
 static struct thermal_zone_device_ops gadc_thermal_ops = {
+	.bind = gadc_thermal_bind,
+	.unbind = gadc_thermal_unbind,
 	.get_temp = gadc_thermal_get_temp,
+	.get_trip_type = gadc_thermal_get_trip_type,
+	.get_trip_temp = gadc_thermal_get_trip_temp,
+	.set_trip_temp = gadc_thermal_set_trip_temp,
 };
 
 #ifdef CONFIG_DEBUG_FS
+static int iio_channel_name_show(struct seq_file *s, void *p)
+{
+	struct gadc_thermal_driver_data *drvdata = s->private;
+
+	seq_printf(s, "%s\n", drvdata->pdata->iio_channel_name);
+	return 0;
+}
+
+static int iio_channel_name_open(struct inode *inode, struct file *file)
+{
+	return single_open(file, iio_channel_name_show, inode->i_private);
+}
+
+static const struct file_operations iio_channel_name_fops = {
+	.open		= iio_channel_name_open,
+	.read		= seq_read,
+	.llseek		= seq_lseek,
+	.release	= single_release,
+};
+
+static int tz_name_show(struct seq_file *s, void *p)
+{
+	struct gadc_thermal_driver_data *drvdata = s->private;
+
+	seq_printf(s, "%s\n", drvdata->pdata->tz_name);
+	return 0;
+}
+
+static int tz_name_open(struct inode *inode, struct file *file)
+{
+	return single_open(file, tz_name_show, inode->i_private);
+}
+
+static const struct file_operations tz_name_fops = {
+	.open		= tz_name_open,
+	.read		= seq_read,
+	.llseek		= seq_lseek,
+	.release	= single_release,
+};
+
 static int adc_temp_show(struct seq_file *s, void *p)
 {
 	struct gadc_thermal_driver_data *drvdata = s->private;
@@ -175,7 +302,39 @@ static const struct file_operations adc_temp_fops = {
 	.release	= single_release,
 };
 
-static int temp_offset_write(struct file *file, const char __user *user_buf,
+static int raw_adc_show(struct seq_file *s, void *p)
+{
+	struct gadc_thermal_driver_data *drvdata = s->private;
+	int val = 0, val2 = 0;
+	int ret;
+
+	if (drvdata->dual_mode)
+		ret = iio_read_channel_raw_dual(drvdata->channel, &val, &val2);
+	else
+		ret = iio_read_channel_raw(drvdata->channel, &val);
+	if (ret < 0) {
+		dev_err(drvdata->dev, "%s: Failed to read channel raw, %d\n",
+			__func__, ret);
+		return ret;
+	}
+
+	seq_printf(s, "%d %d\n", val, val2);
+	return 0;
+}
+
+static int raw_adc_open(struct inode *inode, struct file *file)
+{
+	return single_open(file, raw_adc_show, inode->i_private);
+}
+
+static const struct file_operations raw_adc_fops = {
+	.open		= raw_adc_open,
+	.read		= seq_read,
+	.llseek		= seq_lseek,
+	.release	= single_release,
+};
+
+static ssize_t temp_offset_write(struct file *file, const char __user *user_buf,
 			     size_t count, loff_t *ppos)
 {
 	struct gadc_thermal_driver_data *drvdata =
@@ -232,8 +391,23 @@ static int gadc_thermal_debugfs_init(struct gadc_thermal_driver_data *drvdata)
 	if (!drvdata->dentry)
 		return -ENOMEM;
 
+	d_file = debugfs_create_file("iio_channel_name", 0444, drvdata->dentry,
+				     drvdata, &iio_channel_name_fops);
+	if (!d_file)
+		goto error;
+
+	d_file = debugfs_create_file("tz_name", 0444, drvdata->dentry,
+				     drvdata, &tz_name_fops);
+	if (!d_file)
+		goto error;
+
 	d_file = debugfs_create_file("adc_temp", 0444, drvdata->dentry,
 				     drvdata, &adc_temp_fops);
+	if (!d_file)
+		goto error;
+
+	d_file = debugfs_create_file("raw_adc", 0444, drvdata->dentry,
+				     drvdata, &raw_adc_fops);
 	if (!d_file)
 		goto error;
 
@@ -297,8 +471,11 @@ static int gadc_thermal_probe(struct platform_device *pdev)
 		return PTR_ERR(drvdata->channel);
 	}
 
-	drvdata->tz = thermal_zone_device_register(pdata->tz_name, 0, 0,
-					drvdata, &gadc_thermal_ops, NULL, 0, 0);
+	drvdata->tz = thermal_zone_device_register(pdata->tz_name,
+					pdata->num_trips,
+					(1ULL << pdata->num_trips) - 1,
+					drvdata, &gadc_thermal_ops,
+					pdata->tzp, 0, pdata->polling_delay);
 	if (IS_ERR(drvdata->tz)) {
 		dev_err(&pdev->dev,
 			"%s: Failed to register thermal zone %s, %ld\n",
@@ -327,6 +504,12 @@ static int gadc_thermal_remove(struct platform_device *pdev)
 	return 0;
 }
 
+static void gadc_thermal_shutdown(struct platform_device *pdev)
+{
+	struct gadc_thermal_driver_data *drvdata = platform_get_drvdata(pdev);
+	thermal_zone_device_unregister(drvdata->tz);
+}
+
 static struct platform_driver gadc_thermal_driver = {
 	.driver = {
 		.name = "generic-adc-thermal",
@@ -334,6 +517,7 @@ static struct platform_driver gadc_thermal_driver = {
 	},
 	.probe = gadc_thermal_probe,
 	.remove = gadc_thermal_remove,
+	.shutdown = gadc_thermal_shutdown,
 };
 
 module_platform_driver(gadc_thermal_driver);

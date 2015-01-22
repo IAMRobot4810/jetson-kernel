@@ -3,7 +3,7 @@
  *
  * Tegra Graphics Host Syncpoint Integration to linux/sync Framework
  *
- * Copyright (c) 2013, NVIDIA Corporation. All rights reserved.
+ * Copyright (c) 2013-2014, NVIDIA Corporation. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify it
  * under the terms and conditions of the GNU General Public License,
@@ -55,7 +55,7 @@ struct nvhost_sync_pt_inst {
 	struct nvhost_sync_pt		*shared;
 };
 
-struct nvhost_sync_pt *to_nvhost_sync_pt(struct sync_pt *pt)
+static struct nvhost_sync_pt *to_nvhost_sync_pt(struct sync_pt *pt)
 {
 	struct nvhost_sync_pt_inst *pti =
 			container_of(pt, struct nvhost_sync_pt_inst, pt);
@@ -89,7 +89,11 @@ static int nvhost_sync_pt_set_intr(struct nvhost_sync_pt *pt)
 	/* Get a ref for the interrupt handler, keep host alive. */
 	kref_get(&pt->refcount);
 	pt->has_intr = true;
-	nvhost_module_busy(syncpt_to_dev(pt->obj->sp)->dev);
+	err = nvhost_module_busy(syncpt_to_dev(pt->obj->sp)->dev);
+	if (err) {
+		kref_put(&pt->refcount, nvhost_sync_pt_free_shared);
+		return err;
+	}
 
 	waiter = nvhost_intr_alloc_waiter();
 	err = nvhost_intr_add_action(&(syncpt_to_dev(pt->obj->sp)->intr),
@@ -216,10 +220,35 @@ static void nvhost_sync_pt_value_str(struct sync_pt *sync_pt, char *str,
 		int size)
 {
 	struct nvhost_sync_pt *pt = to_nvhost_sync_pt(sync_pt);
-	struct nvhost_sync_timeline *obj = pt->obj;
+	struct nvhost_sync_timeline *obj;
+
+	/* shared data may not be available yet */
+	if (!pt)
+		return;
+
+	obj = pt->obj;
 
 	if (obj->id != NVSYNCPT_INVALID)
 		snprintf(str, size, "%d", pt->thresh);
+	else
+		snprintf(str, size, "0");
+}
+
+static void nvhost_sync_get_pt_name(struct sync_pt *sync_pt, char *str,
+		int size)
+{
+	struct nvhost_sync_pt *pt = to_nvhost_sync_pt(sync_pt);
+	struct nvhost_sync_timeline *obj;
+
+	/* shared data may not be available yet */
+	if (!pt)
+		return;
+
+	obj = pt->obj;
+
+	if (obj->id != NVSYNCPT_INVALID)
+		snprintf(str, size, "%s",
+			nvhost_syncpt_get_name_from_id(obj->id));
 	else
 		snprintf(str, size, "0");
 }
@@ -249,6 +278,7 @@ static const struct sync_timeline_ops nvhost_sync_timeline_ops = {
 	.fill_driver_data = nvhost_sync_fill_driver_data,
 	.timeline_value_str = nvhost_sync_timeline_value_str,
 	.pt_value_str = nvhost_sync_pt_value_str,
+	.get_pt_name = nvhost_sync_get_pt_name,
 };
 
 struct sync_fence *nvhost_sync_fdget(int fd)
@@ -266,12 +296,13 @@ struct sync_fence *nvhost_sync_fdget(int fd)
 
 		if (timeline->ops != &nvhost_sync_timeline_ops) {
 			sync_fence_put(fence);
-			return ERR_PTR(-EINVAL);
+			return NULL;
 		}
 	}
 
 	return fence;
 }
+EXPORT_SYMBOL(nvhost_sync_fdget);
 
 int nvhost_sync_num_pts(struct sync_fence *fence)
 {
@@ -279,30 +310,26 @@ int nvhost_sync_num_pts(struct sync_fence *fence)
 	struct list_head *pos;
 
 	list_for_each(pos, &fence->pt_list_head) {
-		struct sync_pt *_pt =
-			container_of(pos, struct sync_pt, pt_list);
-		struct nvhost_sync_pt *pt = to_nvhost_sync_pt(_pt);
-		struct nvhost_sync_timeline *obj = pt->obj;
-
-		u32 id = nvhost_sync_pt_id(pt);
-		u32 thresh = nvhost_sync_pt_thresh(pt);
-
-		if (!nvhost_syncpt_is_expired(obj->sp, id, thresh))
-			num++;
+		num++;
 	}
 
 	return num;
 }
+EXPORT_SYMBOL(nvhost_sync_num_pts);
 
-u32 nvhost_sync_pt_id(struct nvhost_sync_pt *pt)
+u32 nvhost_sync_pt_id(struct sync_pt *__pt)
 {
+	struct nvhost_sync_pt *pt = to_nvhost_sync_pt(__pt);
 	return pt->obj->id;
 }
+EXPORT_SYMBOL(nvhost_sync_pt_id);
 
-u32 nvhost_sync_pt_thresh(struct nvhost_sync_pt *pt)
+u32 nvhost_sync_pt_thresh(struct sync_pt *__pt)
 {
+	struct nvhost_sync_pt *pt = to_nvhost_sync_pt(__pt);
 	return pt->thresh;
 }
+EXPORT_SYMBOL(nvhost_sync_pt_thresh);
 
 /* Public API */
 
@@ -348,11 +375,56 @@ void nvhost_sync_pt_signal(struct nvhost_sync_pt *pt)
 	sync_timeline_signal(&obj->obj);
 }
 
-int nvhost_sync_create_fence(struct nvhost_syncpt *sp,
+int nvhost_sync_fence_set_name(int fence_fd, const char *name)
+{
+	struct sync_fence *fence = nvhost_sync_fdget(fence_fd);
+	if (!fence)
+		return -EINVAL;
+	strlcpy(fence->name, name, sizeof(fence->name));
+	sync_fence_put(fence);
+	return 0;
+}
+EXPORT_SYMBOL(nvhost_sync_fence_set_name);
+
+int nvhost_sync_create_fence_fd(struct platform_device *pdev,
 		struct nvhost_ctrl_sync_fence_info *pts,
 		u32 num_pts, const char *name, int *fence_fd)
 {
 	int fd;
+	int err;
+	struct sync_fence *fence = NULL;
+
+	fence = nvhost_sync_create_fence(pdev, pts, num_pts, name);
+
+	if (fence == NULL) {
+		err = -EINVAL;
+		goto err;
+	}
+
+	fd = get_unused_fd();
+	if (fd < 0) {
+		err = fd;
+		goto err;
+	}
+
+	*fence_fd = fd;
+	sync_fence_install(fence, fd);
+	return 0;
+
+err:
+	if (fence)
+		sync_fence_put(fence);
+
+	return err;
+}
+EXPORT_SYMBOL(nvhost_sync_create_fence_fd);
+
+struct sync_fence *nvhost_sync_create_fence(struct platform_device *pdev,
+		struct nvhost_ctrl_sync_fence_info *pts,
+		u32 num_pts, const char *name)
+{
+	struct nvhost_master *master = nvhost_get_host(pdev);
+	struct nvhost_syncpt *sp = &master->syncpt;
 	int err;
 	u32 i;
 	struct sync_fence *fence = NULL;
@@ -399,19 +471,13 @@ int nvhost_sync_create_fence(struct nvhost_syncpt *sp,
 		goto err;
 	}
 
-	fd = get_unused_fd();
-	if (fd < 0) {
-		err = fd;
-		goto err;
-	}
-
-	*fence_fd = fd;
-	sync_fence_install(fence, fd);
-	return 0;
+	return fence;
 
 err:
 	if (fence)
 		sync_fence_put(fence);
 
-	return err;
+	return ERR_PTR(err);
 }
+EXPORT_SYMBOL(nvhost_sync_create_fence);
+

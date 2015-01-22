@@ -1,7 +1,7 @@
 /*
  * AS364X.c - AS364X flash/torch kernel driver
  *
- * Copyright (c) 2012-2013, NVIDIA CORPORATION.  All rights reserved.
+ * Copyright (c) 2012-2014, NVIDIA CORPORATION.  All rights reserved.
 
  * This program is free software; you can redistribute it and/or modify it
  * under the terms and conditions of the GNU General Public License,
@@ -32,6 +32,7 @@
 #include <linux/sysedp.h>
 #include <linux/regmap.h>
 #include <media/nvc.h>
+#include <media/camera.h>
 #include <media/as364x.h>
 
 /* #define DEBUG_I2C_TRAFFIC */
@@ -975,9 +976,15 @@ static int as364x_user_get_param(struct as364x_info *info, long arg)
 	int err = 0;
 	u8 reg;
 
+#ifdef CONFIG_COMPAT
+	memset(&params, 0, sizeof(params));
+	if (copy_from_user(&params, (const void __user *)arg,
+		sizeof(struct nvc_param_32))) {
+#else
 	if (copy_from_user(&params,
 			(const void __user *)arg,
 			sizeof(struct nvc_param))) {
+#endif
 		dev_err(info->dev,
 			"%s %d copy_from_user err\n", __func__, __LINE__);
 		return -EINVAL;
@@ -1071,7 +1078,7 @@ static int as364x_user_get_param(struct as364x_info *info, long arg)
 		err = -EINVAL;
 	}
 
-	if (!err && copy_to_user((void __user *)params.p_value,
+	if (!err && copy_to_user(MAKE_USER_PTR(params.p_value),
 		data_ptr, data_size)) {
 		dev_err(info->dev, "%s copy_to_user err line %d\n",
 			__func__, __LINE__);
@@ -1089,7 +1096,7 @@ static int as364x_get_levels(struct as364x_info *info,
 	struct nvc_torch_timer_capabilities_v1 *p_tm;
 	u8 op_mode;
 
-	if (copy_from_user(plevels, (const void __user *)params->p_value,
+	if (copy_from_user(plevels, MAKE_CONSTUSER_PTR(params->p_value),
 			   sizeof(*plevels))) {
 		dev_err(info->dev, "%s %d copy_from_user err\n",
 				__func__, __LINE__);
@@ -1148,8 +1155,14 @@ static int as364x_user_set_param(struct as364x_info *info, long arg)
 	int err = 0;
 	u8 val;
 
+#ifdef CONFIG_COMPAT
+	memset(&params, 0, sizeof(params));
+	if (copy_from_user(&params, (const void __user *)arg,
+		sizeof(struct nvc_param_32))) {
+#else
 	if (copy_from_user(
 		&params, (const void __user *)arg, sizeof(struct nvc_param))) {
+#endif
 		dev_err(info->dev,
 			"%s %d copy_from_user err\n", __func__, __LINE__);
 		return -EINVAL;
@@ -1172,7 +1185,7 @@ static int as364x_user_set_param(struct as364x_info *info, long arg)
 			led_levels.levels[0], led_levels.levels[1]);
 		break;
 	case NVC_PARAM_FLASH_PIN_STATE:
-		if (copy_from_user(&val, (const void __user *)params.p_value,
+		if (copy_from_user(&val, MAKE_CONSTUSER_PTR(params.p_value),
 			sizeof(val))) {
 			dev_err(info->dev, "%s %d copy_from_user err\n",
 				__func__, __LINE__);
@@ -1202,9 +1215,15 @@ static long as364x_ioctl(struct file *file,
 
 	switch (cmd) {
 	case NVC_IOCTL_PARAM_WR:
+#ifdef CONFIG_COMPAT
+	case NVC_IOCTL_32_PARAM_WR:
+#endif
 		err = as364x_user_set_param(info, arg);
 		break;
 	case NVC_IOCTL_PARAM_RD:
+#ifdef CONFIG_COMPAT
+	case NVC_IOCTL_32_PARAM_RD:
+#endif
 		err = as364x_user_get_param(info, arg);
 		break;
 	case NVC_IOCTL_PWR_WR:
@@ -1321,6 +1340,9 @@ static const struct file_operations as364x_fileops = {
 	.owner = THIS_MODULE,
 	.open = as364x_open,
 	.unlocked_ioctl = as364x_ioctl,
+#ifdef CONFIG_COMPAT
+	.compat_ioctl = as364x_ioctl,
+#endif
 	.release = as364x_release,
 };
 

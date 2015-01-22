@@ -7,7 +7,7 @@
  * Support added for bounded constraints by Sai Gurrappadi
  * <sgurrappad@nvidia.com>
  *
- * Copyright (c) 2013, NVIDIA CORPORATION. All rights reserved.
+ * Copyright (c) 2013-2014, NVIDIA CORPORATION. All rights reserved.
  */
 #include <linux/plist.h>
 #include <linux/notifier.h>
@@ -26,6 +26,7 @@ enum {
 	PM_QOS_CPU_FREQ_MAX,
 	PM_QOS_GPU_FREQ_MIN,
 	PM_QOS_GPU_FREQ_MAX,
+	PM_QOS_EMC_FREQ_MIN,
 
 	/* insert new class ID */
 
@@ -60,11 +61,13 @@ enum pm_qos_flags_status {
 #define PM_QOS_NETWORK_LAT_DEFAULT_VALUE	(2000 * USEC_PER_SEC)
 #define PM_QOS_NETWORK_THROUGHPUT_DEFAULT_VALUE	0
 #define PM_QOS_MIN_ONLINE_CPUS_DEFAULT_VALUE	0
-#define PM_QOS_MAX_ONLINE_CPUS_DEFAULT_VALUE	LONG_MAX
+#define PM_QOS_MAX_ONLINE_CPUS_DEFAULT_VALUE	INT_MAX
 #define PM_QOS_CPU_FREQ_MIN_DEFAULT_VALUE	0
-#define PM_QOS_CPU_FREQ_MAX_DEFAULT_VALUE	LONG_MAX
+#define PM_QOS_CPU_FREQ_MAX_DEFAULT_VALUE	INT_MAX
 #define PM_QOS_GPU_FREQ_MIN_DEFAULT_VALUE	0
-#define PM_QOS_GPU_FREQ_MAX_DEFAULT_VALUE	LONG_MAX
+#define PM_QOS_GPU_FREQ_MAX_DEFAULT_VALUE	INT_MAX
+#define PM_QOS_EMC_FREQ_MIN_DEFAULT_VALUE	0
+#define PM_QOS_EMC_FREQ_MAX_DEFAULT_VALUE	INT_MAX
 #define PM_QOS_DEV_LAT_DEFAULT_VALUE		0
 
 #define PM_QOS_FLAG_NO_POWER_OFF	(1 << 0)

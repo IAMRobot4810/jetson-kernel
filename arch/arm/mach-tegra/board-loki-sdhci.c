@@ -177,7 +177,7 @@ static struct tegra_sdhci_platform_data tegra_sdhci_platform_data3 = {
 	.power_gpio = -1,
 	.is_8bit = 1,
 	.tap_delay = 0x4,
-	.trim_delay = 0x3,
+	.trim_delay = 0x4,
 	.ddr_trim_delay = 0x0,
 	.mmc_data = {
 		.built_in = 1,
@@ -441,14 +441,15 @@ static int __init loki_wifi_init(void)
 #ifdef CONFIG_TEGRA_PREPOWER_WIFI
 static int __init loki_wifi_prepower(void)
 {
-	if (!of_machine_is_compatible("nvidia,loki"))
+	if ((!of_machine_is_compatible("nvidia,loki")) &&
+		(!of_machine_is_compatible("nvidia,t132loki")))
 		return 0;
 	loki_wifi_power(1);
 
 	return 0;
 }
 
-subsys_initcall_sync(loki_wifi_prepower);
+fs_initcall(loki_wifi_prepower);
 #endif
 
 int __init loki_sdhci_init(void)
@@ -461,7 +462,11 @@ int __init loki_sdhci_init(void)
 
 	tegra_get_board_info(&bi);
 
+#ifdef CONFIG_ARCH_TEGRA_13x_SOC
+	if (bi.board_id == BOARD_E2548) {
+#else
 	if (bi.board_id == BOARD_E2548 && bi.sku == 0x0 && bi.fab == 0x0) {
+#endif
 		tegra_sdhci_platform_data3.uhs_mask |= MMC_MASK_HS200;
 		tegra_sdhci_platform_data3.max_clk_limit = 102000000;
 	}
@@ -490,7 +495,7 @@ int __init loki_sdhci_init(void)
 		tegra_sdhci_platform_data3.boot_vcore_mv = boot_vcore_mv;
 	}
 
-	tegra_sdhci_platform_data0.max_clk_limit = 204000000;
+	tegra_sdhci_platform_data0.max_clk_limit = 136000000;
 
 	speedo = tegra_fuse_readl(FUSE_SOC_SPEEDO_0);
 	tegra_sdhci_platform_data0.cpu_speedo = speedo;
@@ -499,10 +504,12 @@ int __init loki_sdhci_init(void)
 
 
 	platform_device_register(&tegra_sdhci_device3);
-
+#ifdef CONFIG_ARCH_TEGRA_13x_SOC
 	if (!is_uart_over_sd_enabled())
+#else
+	if (!is_uart_over_sd_enabled() && !is_tegra_diagnostic_mode())
+#endif
 		platform_device_register(&tegra_sdhci_device2);
-
 	platform_device_register(&tegra_sdhci_device0);
 	loki_wifi_init();
 

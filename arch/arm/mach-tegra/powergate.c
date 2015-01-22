@@ -85,6 +85,7 @@ int tegra_powergate_set(int id, bool new_state)
 		/* CPU ungated in s/w only during boot/resume with outer
 		   waiting loop and no contention from other CPUs */
 		pmc_write(PWRGATE_TOGGLE_START | id, PWRGATE_TOGGLE);
+		pmc_read(PWRGATE_TOGGLE);
 		spin_unlock_irqrestore(lock, flags);
 		return 0;
 	}
@@ -259,6 +260,11 @@ void get_clk_info(struct powergate_partition_info *pg_info)
 
 		pg_info->clk_info[idx].clk_ptr = tegra_get_clock_by_name(
 			pg_info->clk_info[idx].clk_name);
+
+		if (IS_ERR_OR_NULL(pg_info->clk_info[idx].clk_ptr))
+			WARN(1, "Could not find clock %s for %s partition\n",
+				pg_info->clk_info[idx].clk_name,
+				pg_info->name);
 	}
 }
 
@@ -655,6 +661,10 @@ int __init tegra_powergate_init(void)
 
 		case TEGRA_CHIPID_TEGRA12:
 			pg_ops = tegra12x_powergate_init_chip_support();
+			break;
+
+		case TEGRA_CHIPID_TEGRA13:
+			pg_ops = tegra12x_powergate_init_chip_support(); /* FIXME */
 			break;
 
 		default:

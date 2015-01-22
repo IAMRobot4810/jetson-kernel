@@ -1,7 +1,7 @@
 /*
  * arch/arm/mach-tegra/board-ardbeg-sdhci.c
  *
- * Copyright (c) 2013, NVIDIA CORPORATION.  All rights reserved.
+ * Copyright (c) 2013-2014, NVIDIA CORPORATION.  All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify it
  * under the terms and conditions of the GNU General Public License,
@@ -28,10 +28,12 @@
 #include <linux/platform_data/mmc-sdhci-tegra.h>
 #include <linux/mfd/max77660/max77660-core.h>
 #include <linux/tegra-fuse.h>
+#include <linux/dma-mapping.h>
 
 #include <asm/mach-types.h>
 #include <mach/irqs.h>
 #include <mach/gpio-tegra.h>
+#include <mach/nct.h>
 
 #include "gpio-names.h"
 #include "board.h"
@@ -170,6 +172,8 @@ static struct embedded_sdio_data embedded_sdio_data0 = {
 };
 #endif
 
+static u64 tegra_sdhci_dmamask = DMA_BIT_MASK(64);
+
 static struct tegra_sdhci_platform_data tegra_sdhci_platform_data0 = {
 	.mmc_data = {
 		.register_status_notify	= ardbeg_wifi_status_register,
@@ -185,10 +189,10 @@ static struct tegra_sdhci_platform_data tegra_sdhci_platform_data0 = {
 	.tap_delay = 0,
 	.trim_delay = 0x2,
 	.ddr_clk_limit = 41000000,
-	.uhs_mask = MMC_UHS_MASK_DDR50 |
-		MMC_UHS_MASK_SDR50,
+	.uhs_mask = MMC_UHS_MASK_DDR50,
 	.calib_3v3_offsets = 0x7676,
 	.calib_1v8_offsets = 0x7676,
+	.max_clk_limit = 136000000,
 };
 
 static struct tegra_sdhci_platform_data tegra_sdhci_platform_data2 = {
@@ -208,14 +212,14 @@ static struct tegra_sdhci_platform_data tegra_sdhci_platform_data3 = {
 	.power_gpio = -1,
 	.is_8bit = 1,
 	.tap_delay = 0x4,
-	.trim_delay = 0x3,
+	.trim_delay = 0x4,
 	.ddr_trim_delay = 0x0,
 	.mmc_data = {
 		.built_in = 1,
 		.ocr_mask = MMC_OCR_1V8_MASK,
 	},
 	.ddr_clk_limit = 51000000,
-	.max_clk_limit = 102000000,
+	.max_clk_limit = 200000000,
 	.calib_3v3_offsets = 0x0202,
 	.calib_1v8_offsets = 0x0202,
 };
@@ -226,6 +230,8 @@ static struct platform_device tegra_sdhci_device0 = {
 	.resource	= sdhci_resource0,
 	.num_resources	= ARRAY_SIZE(sdhci_resource0),
 	.dev = {
+		.dma_mask = &tegra_sdhci_dmamask,
+		.coherent_dma_mask = DMA_BIT_MASK(64),
 		.platform_data = &tegra_sdhci_platform_data0,
 	},
 };
@@ -236,6 +242,8 @@ static struct platform_device tegra_sdhci_device2 = {
 	.resource	= sdhci_resource2,
 	.num_resources	= ARRAY_SIZE(sdhci_resource2),
 	.dev = {
+		.dma_mask = &tegra_sdhci_dmamask,
+		.coherent_dma_mask = DMA_BIT_MASK(64),
 		.platform_data = &tegra_sdhci_platform_data2,
 	},
 };
@@ -246,6 +254,8 @@ static struct platform_device tegra_sdhci_device3 = {
 	.resource	= sdhci_resource3,
 	.num_resources	= ARRAY_SIZE(sdhci_resource3),
 	.dev = {
+		.dma_mask = &tegra_sdhci_dmamask,
+		.coherent_dma_mask = DMA_BIT_MASK(64),
 		.platform_data = &tegra_sdhci_platform_data3,
 	},
 };
@@ -288,17 +298,36 @@ static int ardbeg_wifi_reset(int on)
 	return 0;
 }
 
-#define ARDBEG_WIFI_MAC_ADDR_FILE	"/mnt/factory/wifi/wifi_mac.txt"
+static int _ardbeg_wifi_get_mac_addr_nct(unsigned char *buf)
+{
+	int ret = -ENODATA;
+#ifdef CONFIG_TEGRA_USE_NCT
+	union nct_item_type *entry = NULL;
+	entry = kmalloc(sizeof(union nct_item_type), GFP_KERNEL);
+	if (entry) {
+		if (!tegra_nct_read_item(NCT_ID_WIFI_MAC_ADDR, entry)) {
+			memcpy(buf, entry->wifi_mac_addr.addr,
+					sizeof(struct nct_mac_addr_type));
+			ret = 0;
+		}
+		kfree(entry);
+	}
 
-static int ardbeg_wifi_get_mac_addr(unsigned char *buf)
+	if (ret)
+		pr_warn("%s: Couldn't find MAC address from NCT\n", __func__);
+#endif
+
+	return ret;
+}
+
+#define ARDBEG_WIFI_MAC_ADDR_FILE	"/mnt/factory/wifi/wifi_mac.txt"
+static int _ardbeg_wifi_get_mac_addr_file(unsigned char *buf)
 {
 	struct file *fp;
 	int rdlen;
 	char str[32];
 	int mac[6];
 	int ret = 0;
-
-	pr_debug("%s\n", __func__);
 
 	/* open wifi mac address file */
 	fp = filp_open(ARDBEG_WIFI_MAC_ADDR_FILE, O_RDONLY, 0);
@@ -340,6 +369,15 @@ static int ardbeg_wifi_get_mac_addr(unsigned char *buf)
 	filp_close(fp, NULL);
 
 	return ret;
+}
+
+static int ardbeg_wifi_get_mac_addr(unsigned char *buf)
+{
+	/* try to get mac address stored in NCT first */
+	if (_ardbeg_wifi_get_mac_addr_nct(buf))
+		return _ardbeg_wifi_get_mac_addr_file(buf);
+
+	return 0;
 }
 
 static int __init ardbeg_wifi_init(void)
@@ -387,6 +425,7 @@ static int __init ardbeg_wifi_prepower(void)
 		!of_machine_is_compatible("nvidia,ardbeg_sata") &&
 		!of_machine_is_compatible("nvidia,tn8") &&
 		!of_machine_is_compatible("nvidia,norrin") &&
+		!of_machine_is_compatible("nvidia,bowmore") &&
 		!of_machine_is_compatible("nvidia,jetson-tk1"))
 		return 0;
 	ardbeg_wifi_power(1);
@@ -434,13 +473,23 @@ int __init ardbeg_sdhci_init(void)
 		tegra_sdhci_platform_data2.wp_gpio = ARDBEG_SD_WP;
 
 	tegra_get_board_info(&board_info);
-	if (board_info.board_id == BOARD_E1780) {
-		tegra_sdhci_platform_data3.max_clk_limit = 200000000;
+	if (board_info.board_id == BOARD_E1780)
 		tegra_sdhci_platform_data2.max_clk_limit = 204000000;
-		tegra_sdhci_platform_data0.max_clk_limit = 204000000;
-	} else {
-		tegra_sdhci_platform_data3.uhs_mask = MMC_MASK_HS200;
+
+	/* E1780 and E1784 are using interposer E1816, Due to this the
+	 * SDIO trace length got increased. So hard coding the drive
+	 * strength to type A for these boards to support 204 Mhz */
+	if ((board_info.board_id == BOARD_E1780) ||
+		(board_info.board_id == BOARD_E1784)) {
+		tegra_sdhci_platform_data0.default_drv_type =
+			MMC_SET_DRIVER_TYPE_A;
 	}
+
+	if (board_info.board_id == BOARD_P1761)
+		tegra_sdhci_platform_data0.max_clk_limit = 204000000;
+
+	if (board_info.board_id == BOARD_E1781)
+		tegra_sdhci_platform_data3.uhs_mask = MMC_MASK_HS200;
 
 	if (board_info.board_id == BOARD_PM374 ||
 		board_info.board_id == BOARD_PM358 ||
@@ -461,16 +510,31 @@ int __init ardbeg_sdhci_init(void)
 	tegra_sdhci_platform_data2.cpu_speedo = speedo;
 	tegra_sdhci_platform_data3.cpu_speedo = speedo;
 
-	speedo = tegra_fuse_readl(FUSE_SOC_SPEEDO_0);
-	tegra_sdhci_platform_data0.cpu_speedo = speedo;
-	tegra_sdhci_platform_data2.cpu_speedo = speedo;
-	tegra_sdhci_platform_data3.cpu_speedo = speedo;
+	if (board_info.board_id == BOARD_E1991 ||
+		board_info.board_id == BOARD_E1971) {
+			tegra_sdhci_platform_data0.uhs_mask =
+				MMC_UHS_MASK_SDR50 | MMC_UHS_MASK_DDR50;
+			tegra_sdhci_platform_data2.uhs_mask =
+				MMC_UHS_MASK_SDR50;
+	}
+
+	if (board_info.board_id == BOARD_E1991)
+		tegra_sdhci_platform_data0.max_clk_limit = 204000000;
+
+	if (board_info.board_id == BOARD_PM374 ||
+		board_info.board_id == BOARD_PM359) {
+			tegra_sdhci_platform_data2.uhs_mask =
+				MMC_UHS_MASK_SDR50;
+			tegra_sdhci_platform_data0.uhs_mask =
+				MMC_UHS_MASK_SDR50;
+			tegra_sdhci_platform_data3.max_clk_limit = 200000000;
+			tegra_sdhci_platform_data2.max_clk_limit = 204000000;
+	}
 
 	platform_device_register(&tegra_sdhci_device3);
 	platform_device_register(&tegra_sdhci_device2);
 	if (board_info.board_id != BOARD_PM359 &&
-			board_info.board_id != BOARD_PM375 &&
-			board_info.board_id != BOARD_PM377) {
+			board_info.board_id != BOARD_PM375) {
 		platform_device_register(&tegra_sdhci_device0);
 		ardbeg_wifi_init();
 	}

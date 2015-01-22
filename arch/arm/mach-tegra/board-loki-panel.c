@@ -27,6 +27,7 @@
 #include <linux/tegra_pwm_bl.h>
 #include <linux/regulator/consumer.h>
 #include <linux/pwm_backlight.h>
+#include <linux/dma-mapping.h>
 
 #include <mach/irqs.h>
 #include <mach/dc.h>
@@ -221,16 +222,16 @@ static int loki_hdmi_hotplug_init(struct device *dev)
 struct tmds_config loki_tmds_config[] = {
 	{ /* 720p / 74.25MHz modes */
 		.pclk = 74250000,
-		.pll0 = 0x01003f10,
-		.pll1 = 0x10300b00,
+		.pll0 = 0x01003110,
+		.pll1 = 0x00301500,
 		.pe_current = 0x00000000,
 		.drive_current = 0x32323232,
 		.peak_current = 0x05050505,
 	},
 	{ /* 1080p / 148.5MHz modes */
 		.pclk = 148500000,
-		.pll0 = 0x01003f10,
-		.pll1 = 0x10300b00,
+		.pll0 = 0x01003310,
+		.pll1 = 0x00301500,
 		.pe_current = 0x00000000,
 		.drive_current = 0x32323232,
 		.peak_current = 0x05050505,
@@ -238,7 +239,7 @@ struct tmds_config loki_tmds_config[] = {
 	{ /* 297MHz modes */
 		.pclk = INT_MAX,
 		.pll0 = 0x01003f10,
-		.pll1 = 0x13300b00,
+		.pll1 = 0x00300f00,
 		.pe_current = 0x00000000,
 		.drive_current = 0x36363636,
 		.peak_current = 0x07070707,
@@ -270,7 +271,7 @@ static struct tegra_dc_out loki_disp2_out = {
 	.flags		= TEGRA_DC_OUT_HOTPLUG_HIGH,
 	.parent_clk	= "pll_d2",
 
-	.dcc_bus	= 3,
+	.ddc_bus	= 3,
 	.hotplug_gpio	= loki_hdmi_hpd,
 
 	.max_pixclock	= KHZ2PICOS(297000),
@@ -288,6 +289,7 @@ static struct tegra_dc_out loki_disp2_out = {
 static struct tegra_fb_data loki_disp1_fb_data = {
 	.win		= 0,
 	.bits_per_pixel = 32,
+	.flags		= TEGRA_FB_FLIP_ON_PROBE,
 };
 
 static struct tegra_dc_platform_data loki_disp1_pdata = {
@@ -305,6 +307,7 @@ static struct tegra_fb_data loki_disp2_fb_data = {
 	.xres		= 1024,
 	.yres		= 600,
 	.bits_per_pixel = 32,
+	.flags		= TEGRA_FB_FLIP_ON_PROBE,
 };
 
 static struct tegra_dc_platform_data loki_disp2_pdata = {
@@ -343,18 +346,21 @@ static struct nvmap_platform_carveout loki_carveouts[] = {
 		.usage_mask	= NVMAP_HEAP_CARVEOUT_IRAM,
 		.base		= TEGRA_IRAM_BASE + TEGRA_RESET_HANDLER_SIZE,
 		.size		= TEGRA_IRAM_SIZE - TEGRA_RESET_HANDLER_SIZE,
+		.dma_dev	= &tegra_iram_dev,
 	},
 	[1] = {
 		.name		= "generic-0",
 		.usage_mask	= NVMAP_HEAP_CARVEOUT_GENERIC,
 		.base		= 0, /* Filled in by loki_panel_init() */
 		.size		= 0, /* Filled in by loki_panel_init() */
+		.dma_dev	= &tegra_generic_dev,
 	},
 	[2] = {
 		.name		= "vpr",
 		.usage_mask	= NVMAP_HEAP_CARVEOUT_VPR,
 		.base		= 0, /* Filled in by loki_panel_init() */
 		.size		= 0, /* Filled in by loki_panel_init() */
+		.dma_dev	= &tegra_vpr_dev,
 	},
 };
 
@@ -454,6 +460,10 @@ int __init loki_panel_init(int board_id)
 	struct resource __maybe_unused *res;
 	struct platform_device *phost1x = NULL;
 	struct board_info bi;
+#ifdef CONFIG_NVMAP_USE_CMA_FOR_CARVEOUT
+	struct dma_declare_info vpr_dma_info;
+	struct dma_declare_info generic_dma_info;
+#endif
 
 	tegra_get_board_info(&bi);
 	if ((bi.sku == BOARD_SKU_FOSTER) && (bi.board_id == BOARD_P2530)) {
@@ -468,6 +478,7 @@ int __init loki_panel_init(int board_id)
 		loki_disp2_fb_data.xres = 1920;
 		loki_disp2_fb_data.yres = 1080;
 		loki_disp2_device.id = 0;
+		loki_disp2_out.parent_clk = "pll_d";
 
 		loki_disp2_out.modes = hdmi_panel_modes;
 		loki_disp2_out.n_modes = ARRAY_SIZE(hdmi_panel_modes);
@@ -477,14 +488,48 @@ int __init loki_panel_init(int board_id)
 #ifdef CONFIG_TEGRA_NVMAP
 	loki_carveouts[1].base = tegra_carveout_start;
 	loki_carveouts[1].size = tegra_carveout_size;
+
 	loki_carveouts[2].base = tegra_vpr_start;
 	loki_carveouts[2].size = tegra_vpr_size;
+
 #ifdef CONFIG_NVMAP_USE_CMA_FOR_CARVEOUT
+	generic_dma_info.name = "generic";
+	generic_dma_info.base = tegra_carveout_start;
+	generic_dma_info.size = tegra_carveout_size;
+	generic_dma_info.resize = false;
+	generic_dma_info.cma_dev = NULL;
+
+	vpr_dma_info.name = "vpr";
+	vpr_dma_info.base = tegra_vpr_start;
+	vpr_dma_info.size = tegra_vpr_size;
+	vpr_dma_info.resize = false;
+	vpr_dma_info.cma_dev = NULL;
 	loki_carveouts[1].cma_dev = &tegra_generic_cma_dev;
 	loki_carveouts[1].resize = false;
 	loki_carveouts[2].cma_dev = &tegra_vpr_cma_dev;
 	loki_carveouts[2].resize = true;
-	loki_carveouts[2].cma_chunk_size = SZ_32M;
+
+	vpr_dma_info.size = SZ_32M;
+	vpr_dma_info.resize = true;
+	vpr_dma_info.cma_dev = &tegra_vpr_cma_dev;
+	vpr_dma_info.notifier.ops = &vpr_dev_ops;
+
+	if (tegra_carveout_size) {
+		err = dma_declare_coherent_resizable_cma_memory(
+				&tegra_generic_dev, &generic_dma_info);
+		if (err) {
+			pr_err("Generic coherent memory declaration failed\n");
+			return err;
+		}
+	}
+	if (tegra_vpr_size) {
+		err = dma_declare_coherent_resizable_cma_memory(
+				&tegra_vpr_dev, &vpr_dma_info);
+		if (err) {
+			pr_err("VPR coherent memory declaration failed\n");
+			return err;
+		}
+	}
 #endif
 
 	err = platform_device_register(&loki_nvmap_device);
@@ -506,10 +551,15 @@ int __init loki_panel_init(int board_id)
 	res->end = tegra_fb_start + tegra_fb_size - 1;
 
 	/* Copy the bootloader fb to the fb. */
-	__tegra_move_framebuffer(&loki_nvmap_device,
-		tegra_fb_start, tegra_bootloader_fb_start,
+	if (tegra_bootloader_fb_size)
+		__tegra_move_framebuffer(&loki_nvmap_device,
+			tegra_fb_start, tegra_bootloader_fb_start,
 			min(tegra_fb_size, tegra_bootloader_fb_size));
+	else
+		__tegra_clear_framebuffer(&loki_nvmap_device,
+				tegra_fb_start, tegra_fb_size);
 
+	/* Copy the bootloader fb2 to the fb2. */
 	if (tegra_bootloader_fb2_size)
 		__tegra_move_framebuffer(&loki_nvmap_device,
 			tegra_fb2_start, tegra_bootloader_fb2_start,
@@ -541,14 +591,6 @@ int __init loki_panel_init(int board_id)
 		return err;
 	}
 
-#ifdef CONFIG_TEGRA_NVAVP
-	nvavp_device.dev.parent = &phost1x->dev;
-	err = platform_device_register(&nvavp_device);
-	if (err) {
-		pr_err("nvavp device registration failed\n");
-		return err;
-	}
-#endif
 	return err;
 }
 #else

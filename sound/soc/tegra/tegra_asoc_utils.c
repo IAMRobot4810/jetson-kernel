@@ -2,7 +2,7 @@
  * tegra_asoc_utils.c - Harmony machine ASoC driver
  *
  * Author: Stephen Warren <swarren@nvidia.com>
- * Copyright (c) 2010-2013, NVIDIA CORPORATION.  All rights reserved.
+ * Copyright (c) 2010-2014, NVIDIA CORPORATION.  All rights reserved.
  *
  * This program is free software; you can redistribute it and/or
  * modify it under the terms of the GNU General Public License
@@ -52,8 +52,10 @@
 #include "tegra_asoc_utils.h"
 
 int g_is_call_mode;
+EXPORT_SYMBOL(g_is_call_mode);
 static atomic_t dap_ref_count[5];
 int tegra_i2sloopback_func;
+EXPORT_SYMBOL(tegra_i2sloopback_func);
 
 static const char * const loopback_function[] = {
 	"Off",
@@ -321,8 +323,15 @@ static int tegra_set_i2sloopback(struct snd_kcontrol *kcontrol,
 struct snd_kcontrol_new tegra_avp_controls[] = {
 	SOC_SINGLE_EXT("AVP alsa device select", 0, 0, TEGRA_ALSA_MAX_DEVICES, \
 			0, tegra_get_avp_device, tegra_set_avp_device),
-	SOC_SINGLE_EXT("AVP DMA channel id", 0, 0, TEGRA_DMA_MAX_CHANNELS, \
-			0, tegra_get_dma_ch_id, NULL),
+	{
+		.name = "AVP DMA channel id", \
+		.iface = SNDRV_CTL_ELEM_IFACE_MIXER, \
+		.info = snd_soc_info_volsw, \
+		.access = SNDRV_CTL_ELEM_ACCESS_READ, \
+		.get = tegra_get_dma_ch_id, \
+		.private_value = SOC_SINGLE_VALUE(0, 0, \
+			TEGRA_DMA_MAX_CHANNELS, 0)
+	},
 	SOC_SINGLE_EXT("AVP DMA address", 0, 0, 0xFFFFFFFF, \
 			0, tegra_get_dma_addr, tegra_set_dma_addr),
 };
@@ -387,6 +396,7 @@ int tegra_asoc_utils_set_rate(struct tegra_asoc_utils_data *data, int srate,
 	case 48000:
 	case 64000:
 	case 96000:
+	case 192000:
 		if (data->soc == TEGRA_ASOC_UTILS_SOC_TEGRA20)
 			new_baseclock = 73728000;
 		else if (data->soc == TEGRA_ASOC_UTILS_SOC_TEGRA30)

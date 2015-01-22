@@ -128,12 +128,13 @@ void ote_print_logs(void)
 {
 	char *text = NULL;
 	char *temp = NULL;
+	char *buffer = NULL;
 
 	if (!ote_logging_enabled)
 		return;
 
-	text = kzalloc(LOGBUF_SIZE, GFP_KERNEL);
-	BUG_ON(!text);
+	buffer = kzalloc(LOGBUF_SIZE, GFP_KERNEL);
+	BUG_ON(!buffer);
 
 	/* This detects if the buffer proved to be too small to hold the data.
 	 * If buffer is not large enough, it overwrites it's oldest data,
@@ -144,12 +145,17 @@ void ote_print_logs(void)
 		cb->overflow = 0;
 	}
 
-	if (circ_buf_copy(cb, text) != 0) {
-		kfree(text);
+	if (circ_buf_copy(cb, buffer) != 0) {
+		kfree(buffer);
 		return;
 	}
 	cb->buf[cb->end] = '\0';
 
+	/* In case no delimiter was found,
+	 * the token is taken to be the entire string *stringp,
+	 * and *stringp is made NULL.
+	 */
+	text = buffer;
 	temp = strsep(&text, "\n");
 	while (temp != NULL) {
 		if (strnlen(temp, LOGBUF_SIZE))
@@ -159,7 +165,7 @@ void ote_print_logs(void)
 
 	/* Indicate that buffer is empty */
 	cb->start = cb->end;
-	kfree(text);
+	kfree(buffer);
 }
 #else
 void ote_print_logs(void) {}
@@ -172,17 +178,19 @@ void ote_print_logs(void) {}
  */
 static int __init ote_logger_init(void)
 {
-	uint32_t smc_args[MAX_EXT_SMC_ARGS];
+	uintptr_t smc_args[MAX_EXT_SMC_ARGS];
 
 #if defined(CONFIG_OTE_ENABLE_LOGGER)
 	if (circ_buf_init(&cb) != 0)
 		return -1;
 
 	smc_args[0] = TE_SMC_INIT_LOGGER;
-	smc_args[1] = (uint32_t)cb;
-	tlk_generic_smc(smc_args[0], smc_args[1], 0);
+	smc_args[1] = (uintptr_t)cb;
 
-	ote_logging_enabled = 1;
+	/* enable logging only if secure firmware supports it */
+	if (!tlk_generic_smc(smc_args[0], smc_args[1], 0))
+		ote_logging_enabled = 1;
+
 	ote_print_logs();
 #else
 	smc_args[0] = TE_SMC_INIT_LOGGER;

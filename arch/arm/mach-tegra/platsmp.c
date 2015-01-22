@@ -7,7 +7,7 @@
  *  Copyright (C) 2009 Palm
  *  All Rights Reserved
  *
- *  Copyright (C) 2010-2013, NVIDIA Corporation. All rights reserved.
+ *  Copyright (C) 2010-2014, NVIDIA Corporation. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 2 as
@@ -93,11 +93,20 @@ static void __init setup_core_count(void)
 	}
 	cpuid = (read_cpuid_id() >> 4) & 0xFFF;
 
+#ifdef CONFIG_ARM64
+	/* Denver ASIM? */
+	if (cpuid == 0xE0F) {
+		/* 30th bit of MPIDR_EL1: 0 => SMP, 1 => UP */
+		__asm__("mrs %0, mpidr_el1\n" : "=r" (l2ctlr));
+		number_of_cores = (l2ctlr & (1 << 30)) ? 2 : 1;
+	}
+#else
 	/* Cortex-A15? */
 	if (cpuid == 0xC0F) {
 		__asm__("mrc p15, 1, %0, c9, c0, 2\n" : "=r" (l2ctlr));
 		number_of_cores = ((l2ctlr >> 24) & 3) + 1;
 	}
+#endif
 	else {
 #endif
 #ifdef CONFIG_HAVE_ARM_SCU
@@ -260,6 +269,7 @@ static int tegra11x_power_up_cpu(unsigned int cpu)
 
 		reg = PMC_TOGGLE_START | TEGRA_CPU_POWERGATE_ID(cpu);
 		pmc_writel(reg, PWRGATE_TOGGLE);
+		pmc_readl(PWRGATE_TOGGLE);
 	}
 
 	return 0;
@@ -384,15 +394,7 @@ static void __init tegra_smp_init_cpus(void)
 	for (i = 0; i < ncores; i++)
 		set_cpu_possible(i, true);
 
-	/* If only one CPU is possible, platform_smp_prepare_cpus() will
-	   never get called. We must therefore initialize the reset handler
-	   here. If there is more than one CPU, we must wait until after
-	   the cpu_present_mask has been updated with all present CPUs in
-	   platform_smp_prepare_cpus() before initializing the reset handler. */
-	if (ncores == 1) {
-		tegra_cpu_reset_handler_init();
-		tegra_all_cpus_booted = true;
-	}
+	tegra_all_cpus_booted = true;
 }
 
 static void __init tegra_smp_prepare_cpus(unsigned int max_cpus)
@@ -402,14 +404,6 @@ static void __init tegra_smp_prepare_cpus(unsigned int max_cpus)
 
 	/* Always mark the boot CPU as initially powered up */
 	cpumask_set_cpu(0, tegra_cpu_power_mask);
-
-	if (max_cpus == 1)
-		tegra_all_cpus_booted = true;
-
-	/* If we're here, it means that more than one CPU was found by
-	   smp_init_cpus() which also means that it did not initialize the
-	   reset handler. Do it now before the secondary CPUs are started. */
-	tegra_cpu_reset_handler_init();
 
 #ifdef CONFIG_HAVE_ARM_SCU
 	scu_enable(scu_base);

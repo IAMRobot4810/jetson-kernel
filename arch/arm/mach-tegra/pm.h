@@ -6,7 +6,7 @@
  * Author:
  *	Colin Cross <ccross@google.com>
  *
- * Copyright (c) 2010-2013, NVIDIA CORPORATION.  All rights reserved.
+ * Copyright (c) 2010-2014, NVIDIA CORPORATION.  All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify it
  * under the terms and conditions of the GNU General Public License,
@@ -29,10 +29,11 @@
 #include <linux/init.h>
 #include <linux/errno.h>
 #include <linux/clkdev.h>
+#include <linux/tegra-pmc.h>
+#include <linux/tegra-pm.h>
 
 #include "iomap.h"
 
-#include "pmc.h"
 
 #define PMC_SCRATCH0		0x50
 #define PMC_SCRATCH1		0x54
@@ -112,13 +113,6 @@ bool tegra_set_cpu_in_pd(int cpu);
 
 void tegra_mc_clk_prepare(void);
 void tegra_mc_clk_finish(void);
-int tegra_suspend_dram(enum tegra_suspend_mode mode, unsigned int flags);
-#ifdef CONFIG_TEGRA_LP0_IN_IDLE
-int tegra_enter_lp0(unsigned long sleep_time);
-#else
-static inline int tegra_enter_lp0(unsigned long sleep_time)
-{ return 0; }
-#endif
 #ifdef CONFIG_TEGRA_LP1_LOW_COREVOLTAGE
 int tegra_is_lp1_suspend_mode(void);
 #endif
@@ -143,6 +137,9 @@ unsigned long tegra_lp1bb_emc_min_rate_get(void);
 #define FLOW_CTRL_RAM_REPAIR_BYPASS_EN	(1<<2)
 #define FLOW_CTRL_RAM_REPAIR_STS	(1<<1)
 #define FLOW_CTRL_RAM_REPAIR_REQ	(1<<0)
+
+#define FLOW_CTRL_RAM_REPAIR_1 \
+	(IO_ADDRESS(TEGRA_FLOW_CTRL_BASE) + 0x58)
 
 #define FUSE_SKU_DIRECT_CONFIG \
 	(IO_ADDRESS(TEGRA_FUSE_BASE) + 0x1F4)
@@ -170,14 +167,6 @@ static inline void tegra_lp0_resume_mc(void) {}
 static inline void tegra_lp0_cpu_mode(bool enter) {}
 #endif
 
-#ifdef CONFIG_TEGRA_CLUSTER_CONTROL
-#define INSTRUMENT_CLUSTER_SWITCH 1	/* Should be zero for shipping code */
-#define DEBUG_CLUSTER_SWITCH 0		/* Should be zero for shipping code */
-#define PARAMETERIZE_CLUSTER_SWITCH 1	/* Should be zero for shipping code */
-
-#define CLUSTER_SWITCH_TIME_AVG_SHIFT	4
-#define CLUSTER_SWITCH_AVG_SAMPLES	(0x1U << CLUSTER_SWITCH_TIME_AVG_SHIFT)
-
 enum tegra_cluster_switch_time_id {
 	tegra_cluster_switch_time_id_start = 0,
 	tegra_cluster_switch_time_id_prolog,
@@ -186,6 +175,14 @@ enum tegra_cluster_switch_time_id {
 	tegra_cluster_switch_time_id_end,
 	tegra_cluster_switch_time_id_max
 };
+
+#ifdef CONFIG_TEGRA_CLUSTER_CONTROL
+#define INSTRUMENT_CLUSTER_SWITCH 1	/* Should be zero for shipping code */
+#define DEBUG_CLUSTER_SWITCH 0		/* Should be zero for shipping code */
+#define PARAMETERIZE_CLUSTER_SWITCH 1	/* Should be zero for shipping code */
+
+#define CLUSTER_SWITCH_TIME_AVG_SHIFT	4
+#define CLUSTER_SWITCH_AVG_SAMPLES	(0x1U << CLUSTER_SWITCH_TIME_AVG_SHIFT)
 
 static inline bool is_g_cluster_present(void)
 {
@@ -201,11 +198,19 @@ static inline unsigned int is_lp_cluster(void)
 	reg = readl(FLOW_CTRL_CLUSTER_CONTROL);
 	return reg & 1; /* 0 == G, 1 == LP*/
 #else
+#ifdef CONFIG_ARM64
+	asm("mrs	%0, mpidr_el1\n"
+	    "ubfx	%0, %0, #8, #4"
+	    : "=r" (reg)
+	    :
+	    : "cc","memory");
+#else
 	asm("mrc	p15, 0, %0, c0, c0, 5\n"
 	    "ubfx	%0, %0, #8, #4"
 	    : "=r" (reg)
 	    :
 	    : "cc","memory");
+#endif
 	return reg ; /* 0 == G, 1 == LP*/
 #endif
 }
@@ -333,9 +338,7 @@ void tegra_smp_save_power_mask(void);
 void tegra_smp_restore_power_mask(void);
 #endif
 
-#ifdef CONFIG_TEGRA_USE_SECURE_KERNEL
-void tegra_generic_smc(u32 type, u32 subtype, u32 arg);
-#endif
+u32 tegra_restart_prev_smc(void);
 
 /* The debug channel uart base physical address */
 extern unsigned long  debug_uart_port_base;

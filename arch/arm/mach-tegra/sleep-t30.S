@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2010-2013, NVIDIA CORPORATION.  All rights reserved.
+ * Copyright (c) 2010-2014, NVIDIA CORPORATION.  All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify it
  * under the terms and conditions of the GNU General Public License,
@@ -68,12 +68,15 @@
 #define PMC_IO_DPD2_REQ_DISC_BIAS	(1 << 27)
 #define PMC_SCRATCH1_ECO		0x264
 #define PMC_POR_DPD_CTRL		0x264
+
+#if defined(CONFIG_ARCH_TEGRA_12x_SOC)
 #define PMC_IO_DPD3_REQ			0x45c
 #define PMC_IO_DPD3_STATUS		0x460
 
 #define EMC_SEL_DPD_CTRL		0x3d8
 
 #define PMC_POR_DPD_CTRL		0x264
+#endif
 
 #define FLOW_IPC_STS			0x500
 #define FLOW_IPC_STS_AP2BB_MSC_STS_0	(1 << 4)
@@ -456,7 +459,11 @@ enable_mc:
 
 resume_lp1:
 	mov32	r0, TEGRA_CLK_RESET_BASE
-#if !defined(CONFIG_TEGRA_USE_SECURE_KERNEL)
+
+	ldr	r7, [r12, #RESET_DATA(SECURE_FW_PRESENT)]
+	cmp	r7, #1
+	beq	1f
+
 	/* secure code handles 32KHz to CLKM/OSC clock switch */
 	mov	r1, #(1<<28)
 	str	r1, [r0, #CLK_RESET_SCLK_BURST]
@@ -464,8 +471,8 @@ resume_lp1:
 	mov	r1, #0
 	str	r1, [r0, #CLK_RESET_SCLK_DIVIDER]
 	str	r1, [r0, #CLK_RESET_CCLK_DIVIDER]
-#endif
 
+1:
 #if defined(CONFIG_ARCH_TEGRA_3x_SOC)
 	/* enable PLLM via PMC */
 	mov32	r2, TEGRA_PMC_BASE
@@ -1119,11 +1126,11 @@ tegra3_cpu_clk32k:
 	beq	lp1_clocks_prepare
 
 	/* enable PLLM auto-restart via PMC in LP0; restore override settings */
+	ldr	r0, [r4, #PMC_SCRATCH2]
+	str	r0, [r4, #PMC_PLLM_WB0_OVERRIDE]
 	ldr	r0, [r4, #PMC_PLLP_WB0_OVERRIDE]
 	orr	r0, r0, #((1 << 12) | (1 << 11))
 	str	r0, [r4, #PMC_PLLP_WB0_OVERRIDE]
-	ldr	r0, [r4, #PMC_SCRATCH2]
-	str	r0, [r4, #PMC_PLLM_WB0_OVERRIDE]
 
 #if defined(CONFIG_ARCH_TEGRA_11x_SOC)
 	ldr r1, [r4, #PMC_SCRATCH1_ECO]
@@ -1411,13 +1418,14 @@ defined(CONFIG_ARCH_TEGRA_14x_SOC) || defined(CONFIG_ARCH_TEGRA_12x_SOC)
 	mov32	r0, TEGRA_EMC0_BASE		@ r0 reserved for emc base
 #endif
 enter_self_refresh:
+#if defined(CONFIG_ARCH_TEGRA_12x_SOC)
 	/* Enable SEL_DPD */
 	ldr	r1, [r0, #EMC_SEL_DPD_CTRL]
 	orr	r1, r1, #0xF
 	orr	r1, r1, #0xF0
 	orr	r1, r1, #0x100
 	str	r1, [r0, #EMC_SEL_DPD_CTRL]
-
+#endif
 	mov	r1, #0
 	str	r1, [r0, #EMC_ZCAL_INTERVAL]
 	str	r1, [r0, #EMC_AUTO_CAL_INTERVAL]
@@ -1486,9 +1494,11 @@ defined(CONFIG_ARCH_TEGRA_14x_SOC) || defined(CONFIG_ARCH_TEGRA_12x_SOC)
 	tst	r1, #PMC_CTRL_SIDE_EFFECT_LP0
 	bne	pmc_io_dpd_skip
 
+#if defined(CONFIG_ARCH_TEGRA_12x_SOC)
 	ldr	r1, [r4, #PMC_POR_DPD_CTRL]
 	orr	r1, r1, #0x80000003
 	str	r1, [r4, #PMC_POR_DPD_CTRL]
+#endif
 
 #if !defined(CONFIG_ARCH_TEGRA_12x_SOC)
 	mov32	r1, 0x8EC00000

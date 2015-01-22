@@ -100,6 +100,8 @@ struct regulator_state {
  * @ramp_delay: Time to settle down after voltage change (unit: uV/us)
  * @enable_time: Turn-on time of the rails (unit: microseconds)
  * @disable_time: Turn-off time of the rails (unit: microseconds)
+ * @ramp_delay_scale: x multiplier in % for increasing/decreasing ramp delay.
+ *                 100% is 1x, 150% is 1.5x and so on.
  */
 struct regulation_constraints {
 
@@ -140,6 +142,7 @@ struct regulation_constraints {
 	unsigned int ramp_delay;
 	unsigned int enable_time;
 	unsigned int disable_time;
+	unsigned int ramp_delay_scale;
 
 	unsigned int startup_delay;
 
@@ -148,6 +151,8 @@ struct regulation_constraints {
 	unsigned boot_on:1;	/* bootloader/firmware enabled regulator */
 	unsigned apply_uV:1;	/* apply uV constraint if min == max */
 	unsigned boot_off:1;	/* bootloader/firmware disabled regulator */
+	unsigned int ignore_current_constraint_init:1;
+	unsigned disable_parent_after_enable:1; /* SW based overcurrent protection */
 };
 
 /**

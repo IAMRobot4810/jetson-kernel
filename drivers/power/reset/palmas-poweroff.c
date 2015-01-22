@@ -96,6 +96,9 @@ static void palmas_power_off(void *drv_data)
 	unsigned int val;
 	int i;
 	int ret;
+
+	palmas_allow_atomic_xfer(palmas);
+
 	if (palmas_pm->need_rtc_power_on)
 		palmas_auto_power_on(palmas_pm);
 
@@ -143,6 +146,8 @@ static void palmas_power_reset(void *drv_data)
 	unsigned int val;
 	int i;
 	int ret;
+
+	palmas_allow_atomic_xfer(palmas);
 
 	for (i = 0; i < palmas_pm->num_int_mask_regs; ++i) {
 		ret = palmas_write(palmas, PALMAS_INTERRUPT_BASE,
@@ -200,6 +205,15 @@ static void palmas_power_reset(void *drv_data)
 		}
 
 		ret = palmas_update_bits(palmas, PALMAS_PMU_CONTROL_BASE,
+				PALMAS_SWOFF_COLDRST, PALMAS_SWOFF_COLDRST_SW_RST,
+					PALMAS_SWOFF_COLDRST_SW_RST);
+		if (ret < 0) {
+			dev_err(palmas_pm->dev,
+				"SWOFF_COLDRST update failed: %d\n", ret);
+			goto reset_direct;
+		}
+
+		ret = palmas_update_bits(palmas, PALMAS_PMU_CONTROL_BASE,
 				PALMAS_DEV_CTRL, PALMAS_DEV_CTRL_SW_RST,
 				PALMAS_DEV_CTRL_SW_RST);
 		if (ret < 0) {
@@ -212,6 +226,9 @@ static void palmas_power_reset(void *drv_data)
 
 reset_direct:
 	dev_info(palmas_pm->dev, "Power reset the device\n");
+	palmas_update_bits(palmas, PALMAS_PMU_CONTROL_BASE,
+			PALMAS_SWOFF_COLDRST, PALMAS_SWOFF_COLDRST_SW_RST,
+			PALMAS_SWOFF_COLDRST_SW_RST);
 	palmas_update_bits(palmas, PALMAS_PMU_CONTROL_BASE,
 				PALMAS_DEV_CTRL, 0x2, 0x2);
 }

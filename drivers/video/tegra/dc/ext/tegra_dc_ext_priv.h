@@ -67,6 +67,8 @@ struct tegra_dc_ext_win {
 	struct mutex		queue_lock;
 
 	struct list_head	timestamp_queue;
+
+	bool			enabled;
 };
 
 struct tegra_dc_ext {
@@ -125,7 +127,7 @@ struct tegra_dc_ext_control {
 	struct mutex			lock;
 };
 
-extern int tegra_dc_ext_devno;
+extern dev_t tegra_dc_ext_devno;
 extern struct class *tegra_dc_ext_class;
 
 extern int tegra_dc_ext_pin_window(struct tegra_dc_ext_user *user, u32 id,
@@ -140,13 +142,6 @@ extern int tegra_dc_ext_set_cursor(struct tegra_dc_ext_user *user,
 				   struct tegra_dc_ext_cursor *);
 extern int tegra_dc_ext_cursor_clip(struct tegra_dc_ext_user *user,
 					int *args);
-
-extern int tegra_dc_ext_set_cursor_image_low_latency(
-		struct tegra_dc_ext_user *user,
-		struct tegra_dc_ext_cursor_image *);
-
-extern int tegra_dc_ext_set_cursor_low_latency(struct tegra_dc_ext_user *user,
-					struct tegra_dc_ext_cursor_image *);
 
 extern int tegra_dc_ext_control_init(void);
 

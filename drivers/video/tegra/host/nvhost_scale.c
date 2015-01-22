@@ -1,7 +1,7 @@
 /*
  * Tegra Graphics Host Unit clock scaling
  *
- * Copyright (c) 2010-2013, NVIDIA Corporation. All rights reserved.
+ * Copyright (c) 2010-2014, NVIDIA Corporation. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify it
  * under the terms and conditions of the GNU General Public License,
@@ -23,7 +23,11 @@
 #include <linux/export.h>
 #include <linux/slab.h>
 #include <linux/clk/tegra.h>
+#include <linux/platform_data/tegra_edp.h>
 #include <linux/tegra-soc.h>
+#include <linux/tegra-soc.h>
+#include <linux/platform_data/tegra_edp.h>
+#include <linux/pm_qos.h>
 
 #include <governor.h>
 
@@ -84,7 +88,7 @@ static int nvhost_scale_make_freq_table(struct nvhost_device_profile *profile)
 	if (!num_freqs)
 		dev_warn(&profile->pdev->dev, "dvfs table had no applicable frequencies!\n");
 
-	profile->devfreq_profile.freq_table = (unsigned int *)freqs;
+	profile->devfreq_profile.freq_table = (unsigned long *)freqs;
 	profile->devfreq_profile.max_state = num_freqs;
 
 	return 0;
@@ -103,7 +107,7 @@ static int nvhost_scale_target(struct device *dev, unsigned long *freq,
 	struct nvhost_device_profile *profile = pdata->power_profile;
 
 	if (!tegra_is_clk_enabled(profile->clk)) {
-		*freq = profile->ext_stat.min_freq;
+		*freq = profile->devfreq_profile.freq_table[0];
 		return 0;
 	}
 
@@ -118,6 +122,37 @@ static int nvhost_scale_target(struct device *dev, unsigned long *freq,
 	*freq = clk_get_rate(profile->clk);
 
 	return 0;
+}
+
+/*
+ * nvhost_scale_qos_notify()
+ *
+ * This function is called when the minimum QoS requirement for the device
+ * has changed. The function calls postscaling callback if it is defined.
+ */
+
+static int nvhost_scale_qos_notify(struct notifier_block *nb,
+				   unsigned long n, void *p)
+{
+	struct nvhost_device_profile *profile =
+		container_of(nb, struct nvhost_device_profile,
+			     qos_notify_block);
+	struct nvhost_device_data *pdata = platform_get_drvdata(profile->pdev);
+	unsigned long freq;
+
+	if (!pdata->scaling_post_cb)
+		return NOTIFY_OK;
+
+	/* get the frequency requirement. if devfreq is enabled, check if it
+	 * has higher demand than qos */
+	freq = clk_round_rate(clk_get_parent(profile->clk),
+			      pm_qos_request(pdata->qos_id));
+	if (pdata->power_manager)
+		freq = max(pdata->power_manager->previous_freq, freq);
+
+	pdata->scaling_post_cb(profile, freq);
+
+	return NOTIFY_OK;
 }
 
 /*
@@ -183,6 +218,15 @@ static void nvhost_scale_notify(struct platform_device *pdev, bool busy)
 	if (!profile)
 		return;
 
+	/* inform edp about new constraint */
+	if (pdata->gpu_edp_device) {
+		u32 avg = 0;
+		actmon_op().read_avg_norm(profile->actmon, &avg);
+		BUG();
+		/* the next line passes a bogus frequency */
+		tegra_edp_notify_gpu_load(avg, 0);
+	}
+
 	/* If defreq is disabled, set the freq to max or min */
 	if (!devfreq) {
 		unsigned long freq = busy ? UINT_MAX : 0;
@@ -193,7 +237,7 @@ static void nvhost_scale_notify(struct platform_device *pdev, bool busy)
 	mutex_lock(&devfreq->lock);
 	if (!profile->actmon)
 		update_load_estimate(profile, busy);
-	profile->last_event_type = busy ? DEVICE_BUSY : DEVICE_IDLE;
+	profile->dev_stat.busy = busy;
 	update_devfreq(devfreq);
 	mutex_unlock(&devfreq->lock);
 }
@@ -228,7 +272,6 @@ static int nvhost_scale_get_dev_status(struct device *dev,
 		update_load_estimate_actmon(profile);
 
 	/* Copy the contents of the current device status */
-	profile->ext_stat.busy = profile->last_event_type;
 	*stat = profile->dev_stat;
 
 	/* Finally, clear out the local values */
@@ -246,6 +289,7 @@ void nvhost_scale_init(struct platform_device *pdev)
 {
 	struct nvhost_device_data *pdata = platform_get_drvdata(pdev);
 	struct nvhost_device_profile *profile;
+	int err;
 
 	if (pdata->power_profile)
 		return;
@@ -256,21 +300,12 @@ void nvhost_scale_init(struct platform_device *pdev)
 	pdata->power_profile = profile;
 	profile->pdev = pdev;
 	profile->clk = pdata->clk[0];
-	profile->last_event_type = DEVICE_IDLE;
+	profile->dev_stat.busy = false;
 
-	/* Initialize devfreq related structures */
-	profile->dev_stat.private_data = &profile->ext_stat;
-	profile->ext_stat.min_freq =
-		clk_round_rate(clk_get_parent(profile->clk), 0);
-	profile->ext_stat.max_freq =
-		clk_round_rate(clk_get_parent(profile->clk), UINT_MAX);
-	profile->ext_stat.busy = DEVICE_IDLE;
-
-	if (profile->ext_stat.min_freq == profile->ext_stat.max_freq) {
-		dev_warn(&pdev->dev, "max rate = min rate (%lu), disabling scaling\n",
-			 profile->ext_stat.min_freq);
-		goto err_fetch_clocks;
-	}
+	/* Create frequency table */
+	err = nvhost_scale_make_freq_table(profile);
+	if (err || !profile->devfreq_profile.max_state)
+		goto err_get_freqs;
 
 	/* Initialize actmon */
 	if (pdata->actmon_enabled) {
@@ -295,16 +330,12 @@ void nvhost_scale_init(struct platform_device *pdev)
 
 	if (pdata->devfreq_governor) {
 		struct devfreq *devfreq;
-		int err;
 
 		profile->devfreq_profile.initial_freq =
-			profile->ext_stat.min_freq;
+			profile->devfreq_profile.freq_table[0];
 		profile->devfreq_profile.target = nvhost_scale_target;
 		profile->devfreq_profile.get_dev_status =
 			nvhost_scale_get_dev_status;
-		err = nvhost_scale_make_freq_table(profile);
-		if (err)
-			goto err_get_freqs;
 
 		devfreq = devfreq_add_device(&pdev->dev,
 					&profile->devfreq_profile,
@@ -316,13 +347,21 @@ void nvhost_scale_init(struct platform_device *pdev)
 		pdata->power_manager = devfreq;
 	}
 
+	/* Should we register QoS callback for this device? */
+	if (pdata->qos_id < PM_QOS_NUM_CLASSES &&
+	    pdata->qos_id != PM_QOS_RESERVED) {
+		profile->qos_notify_block.notifier_call =
+			&nvhost_scale_qos_notify;
+		pm_qos_add_notifier(pdata->qos_id,
+				    &profile->qos_notify_block);
+	}
+
 	return;
 
 err_get_freqs:
 err_allocate_actmon:
 	device_remove_file(&pdev->dev, &dev_attr_load);
 err_create_sysfs_entry:
-err_fetch_clocks:
 	kfree(pdata->power_profile);
 	pdata->power_profile = NULL;
 }

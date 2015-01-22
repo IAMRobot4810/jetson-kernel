@@ -370,7 +370,8 @@ struct sdhci_ops {
 		struct mmc_ios *ios);
 	int	(*switch_signal_voltage)(struct sdhci_host *host,
 				unsigned int signal_voltage);
-	void	(*switch_signal_voltage_exit)(struct sdhci_host *host);
+	void	(*switch_signal_voltage_exit)(struct sdhci_host *host,
+				unsigned char signal_voltage);
 	int	(*suspend)(struct sdhci_host *host);
 	int	(*resume)(struct sdhci_host *host);
 	int	(*execute_freq_tuning)(struct sdhci_host *sdhci, u32 opcode);
@@ -380,6 +381,8 @@ struct sdhci_ops {
 	void	(*dfs_gov_exit)(struct sdhci_host *host);
 	unsigned long	(*dfs_gov_get_target_freq)(struct sdhci_host *host,
 		struct devfreq_dev_status *dev_status);
+	int	(*get_drive_strength)(struct sdhci_host *host,
+		unsigned int max_dtr, int host_drv, int card_drv);
 };
 
 #ifdef CONFIG_MMC_SDHCI_IO_ACCESSORS

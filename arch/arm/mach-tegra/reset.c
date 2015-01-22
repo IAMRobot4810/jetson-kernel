@@ -1,7 +1,7 @@
 /*
  * arch/arm/mach-tegra/reset.c
  *
- * Copyright (C) 2011-2013, NVIDIA Corporation. All rights reserved.
+ * Copyright (C) 2011-2014, NVIDIA Corporation. All rights reserved.
  *
  * This software is licensed under the terms of the GNU General Public
  * License version 2, as published by the Free Software Foundation, and
@@ -22,6 +22,7 @@
 #include <linux/tegra-fuse.h>
 
 #include <asm/cacheflush.h>
+#include <asm/psci.h>
 
 #include "iomap.h"
 #include "irammap.h"
@@ -38,40 +39,53 @@ static bool is_enabled;
 static void tegra_cpu_reset_handler_enable(void)
 {
 	void __iomem *iram_base = IO_ADDRESS(TEGRA_IRAM_BASE);
-#if !defined(CONFIG_TEGRA_USE_SECURE_KERNEL)
 	void __iomem *evp_cpu_reset =
 		IO_ADDRESS(TEGRA_EXCEPTION_VECTORS_BASE + 0x100);
 	void __iomem *sb_ctrl = IO_ADDRESS(TEGRA_SB_BASE);
 	unsigned long reg;
+#ifdef CONFIG_DENVER_CPU
+	extern void *__aarch64_tramp;
 #endif
+
 	BUG_ON(is_enabled);
 	BUG_ON(tegra_cpu_reset_handler_size > TEGRA_RESET_HANDLER_SIZE);
 
 	memcpy(iram_base, (void *)__tegra_cpu_reset_handler_start,
 		tegra_cpu_reset_handler_size);
 
-#if defined(CONFIG_TEGRA_USE_SECURE_KERNEL)
-	tegra_generic_smc(0x82000001,
-		TEGRA_RESET_HANDLER_BASE + tegra_cpu_reset_handler_offset, 0);
-#else
-	/* NOTE: This must be the one and only write to the EVP CPU reset
-		 vector in the entire system. */
-	writel(TEGRA_RESET_HANDLER_BASE + tegra_cpu_reset_handler_offset,
-		evp_cpu_reset);
-	wmb();
-	reg = readl(evp_cpu_reset);
+#if defined(CONFIG_ARM_PSCI)
+	if (psci_ops.cpu_on) {
+		psci_ops.cpu_on(0, TEGRA_RESET_HANDLER_BASE +
+			tegra_cpu_reset_handler_offset);
+	} else {
+#endif
 
-	/*
-	 * Prevent further modifications to the physical reset vector.
-	 *  NOTE: Has no effect on chips prior to Tegra30.
-	 */
-	if (tegra_get_chip_id() != TEGRA_CHIPID_TEGRA2) {
-		reg = readl(sb_ctrl);
-		reg |= 2;
-		writel(reg, sb_ctrl);
+#ifdef CONFIG_DENVER_CPU
+		writel(virt_to_phys(&__aarch64_tramp), evp_cpu_reset);
+#else
+		/* NOTE: This must be the one and only write to the EVP CPU
+		 * reset vector in the entire system. */
+		writel(TEGRA_RESET_HANDLER_BASE +
+			tegra_cpu_reset_handler_offset, evp_cpu_reset);
+#endif
+
 		wmb();
+		reg = readl(evp_cpu_reset);
+
+		/*
+		 * Prevent further modifications to the physical reset vector.
+		 *  NOTE: Has no effect on chips prior to Tegra30.
+		 */
+		if (tegra_get_chip_id() != TEGRA_CHIPID_TEGRA2) {
+			reg = readl(sb_ctrl);
+			reg |= 2;
+			writel(reg, sb_ctrl);
+			wmb();
+		}
+#if defined(CONFIG_ARM_PSCI)
 	}
 #endif
+
 	is_enabled = true;
 }
 
@@ -98,11 +112,11 @@ void tegra_cpu_reset_handler_restore(void)
 }
 #endif
 
-void __init tegra_cpu_reset_handler_init(void)
+static int __init tegra_cpu_reset_handler_init(void)
 {
 #ifdef CONFIG_SMP
 	__tegra_cpu_reset_handler_data[TEGRA_RESET_MASK_PRESENT] =
-		*((u32 *)cpu_present_mask);
+		*((ulong *)cpu_present_mask);
 	__tegra_cpu_reset_handler_data[TEGRA_RESET_STARTUP_SECONDARY] =
 		virt_to_phys((void *)tegra_secondary_startup);
 #endif
@@ -114,14 +128,26 @@ void __init tegra_cpu_reset_handler_init(void)
 		virt_to_phys((void *)tegra_resume);
 #endif
 
+#ifdef CONFIG_ARM64
+	flush_icache_range(
+	(unsigned long)&__tegra_cpu_reset_handler_data[0],
+	(unsigned long)&__tegra_cpu_reset_handler_data[TEGRA_RESET_DATA_SIZE]);
+#else
 	/* Push all of reset handler data out to the L3 memory system. */
 	__cpuc_coherent_kern_range(
-		(unsigned long)&__tegra_cpu_reset_handler_data[0],
-		(unsigned long)&__tegra_cpu_reset_handler_data[TEGRA_RESET_DATA_SIZE]);
+	(unsigned long)&__tegra_cpu_reset_handler_data[0],
+	(unsigned long)&__tegra_cpu_reset_handler_data[TEGRA_RESET_DATA_SIZE]);
 
 	outer_clean_range(__pa(&__tegra_cpu_reset_handler_data[0]),
-			  __pa(&__tegra_cpu_reset_handler_data[TEGRA_RESET_DATA_SIZE]));
+		__pa(&__tegra_cpu_reset_handler_data[TEGRA_RESET_DATA_SIZE]));
+#endif
 
 	if (!tegra_cpu_is_dsim()) /* Can't write IRAM on DSIM/MTS (yet) */
 		tegra_cpu_reset_handler_enable();
+
+	__tegra_cpu_reset_handler_data[TEGRA_RESET_SECURE_FW_PRESENT] =
+		tegra_cpu_is_secure();
+
+	return 0;
 }
+early_initcall(tegra_cpu_reset_handler_init);

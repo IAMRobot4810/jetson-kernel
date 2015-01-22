@@ -6,7 +6,7 @@
  * Author:
  *	Colin Cross <ccross@google.com>
  *
- * Copyright (C) 2013 NVIDIA CORPORATION.  All rights reserved.
+ * Copyright (C) 2013-2014, NVIDIA CORPORATION.  All rights reserved.
  *
  * This software is licensed under the terms of the GNU General Public
  * License version 2, as published by the Free Software Foundation, and
@@ -39,7 +39,7 @@
 #include <asm/delay.h>
 
 #include "../../arch/arm/mach-tegra/clock.h"
-
+#include "../../arch/arm/mach-tegra/common.h"
 
 static u32 arch_timer_us_mult, arch_timer_us_shift;
 
@@ -61,20 +61,16 @@ static void __iomem *tsc;
 #define TSC_CNTFID0		0x20		/* TSC freq id 0 */
 
 #define tsc_writel(value, reg) \
-	__raw_writel(value, (u32)tsc + (reg))
+	__raw_writel(value, tsc + (reg))
 #define tsc_readl(reg) \
-	__raw_readl((u32)tsc + (reg))
+	__raw_readl(tsc + (reg))
 #endif /* CONFIG_TEGRA_PRE_SILICON_SUPPORT */
 
 /* Is the optional system timer available? */
 static int local_timer_is_architected(void)
 {
-#ifdef CONFIG_ARM64
-	return 1;
-#else
 	return (cpu_architecture() >= CPU_ARCH_ARMv7) &&
 	       ((read_cpuid_ext(CPUID_EXT_PFR1) >> 16) & 0xf) == 1;
-#endif
 }
 
 static unsigned long arch_timer_read_current_timer(void)
@@ -138,9 +134,9 @@ void __init tegra_cpu_timer_init(void)
 
 static void tegra_arch_timer_per_cpu_init(void)
 {
-#if defined(CONFIG_TEGRA_USE_SECURE_KERNEL)
-	return;
-#else
+	if (tegra_cpu_is_secure())
+		return;
+
 	if (arch_timer_initialized) {
 		u32 tsc_ref_freq = tegra_clk_measure_input_freq();
 
@@ -155,7 +151,6 @@ static void tegra_arch_timer_per_cpu_init(void)
 		   NOTE: this is a write once (per CPU reset) register. */
 		__asm__("mcr p15, 0, %0, c14, c0, 0\n" : : "r" (tsc_ref_freq));
 	}
-#endif
 }
 
 static int arch_timer_cpu_notify(struct notifier_block *self,

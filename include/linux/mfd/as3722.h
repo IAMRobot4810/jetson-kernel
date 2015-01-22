@@ -26,6 +26,8 @@
 #ifndef __LINUX_MFD_AS3722_H__
 #define __LINUX_MFD_AS3722_H__
 
+#include <linux/i2c.h>
+#include <linux/mutex.h>
 #include <linux/mfd/as3722-plat.h>
 #include <linux/regmap.h>
 
@@ -153,6 +155,7 @@
 #define AS3722_ASIC_ID2_REG				0x91
 #define AS3722_LOCK_REG					0x9E
 #define AS3722_FUSE15					0xAF
+#define AS3722_ASIC_ID3_REG				0xCC
 #define AS3722_NCELL_MASK				0x03
 #define AS3722_MAX_REGISTER				0xF4
 
@@ -362,6 +365,34 @@
 
 #define AS3722_CTRL_SEQ1_AC_OK_PWR_ON			BIT(0)
 
+#define AS3722_BBCCUR_MASK				0x18
+#define AS3722_BBCCUR_VAL(n)				((n)  << 3)
+#define AS3722_BBCCUR_50UA				AS3722_BBCCUR_VAL(0)
+#define AS3722_BBCCUR_200UA				AS3722_BBCCUR_VAL(1)
+#define AS3722_BBCCUR_100UA				AS3722_BBCCUR_VAL(2)
+#define AS3722_BBCCUR_400UA				AS3722_BBCCUR_VAL(3)
+#define AS3722_BBCRESOFF_MASK				BIT(2)
+#define AS3722_BBCMODE_MASK				0x03
+#define AS3722_BBCMODE_OFF				0
+#define AS3722_BBCMODE_ACTIVE				1
+#define AS3722_BBCMODE_ACT_STBY				2
+#define AS3722_BBCMODE_ACT_STBY_OFF			3
+
+#define AS3722_PG_AC_OK_INV_MASK			BIT(0)
+#define AS3722_PG_AC_OK_MASK				BIT(1)
+#define AS3722_PG_GPIO3_MASK				BIT(2)
+#define AS3722_PG_GPIO4_MASK				BIT(3)
+#define AS3722_PG_GPIO5_MASK				BIT(4)
+#define AS3722_PG_PWRGOOD_SD0_MASK			BIT(5)
+#define AS3722_PG_OVCURR_SD0_MASK			BIT(6)
+#define AS3722_PG_VRESFALL_MASK				BIT(7)
+
+#define AS3722_OC_PG_INVERT_MASK			BIT(0)
+#define AS3722_PG_VMASK_TIME_MASK			(3 << 1)
+#define AS3722_PG_SD6_OVC_ALARM_MASK			(7 << 3)
+#define AS3722_PG_POWERGOOD_SD6_MASK			BIT(6)
+#define AS3722_PG_OVCURR_SD6_MASK			BIT(7)
+
 /* Interrupt IDs */
 enum as3722_irq {
 	AS3722_IRQ_LID,
@@ -402,6 +433,8 @@ enum as3722_irq {
 struct as3722 {
 	struct device *dev;
 	struct regmap *regmap;
+	struct i2c_client *client;
+	DECLARE_BITMAP(volatile_vsel_registers, AS3722_LDO11_VOLTAGE_REG);
 	int chip_irq;
 	unsigned long irq_flags;
 	int irq_base;
@@ -411,6 +444,13 @@ struct as3722 {
 	struct regmap_irq_chip_data *irq_data;
 	u32 major_rev;
 	u32 minor_rev;
+	struct mutex mutex_config;
+	bool shutdown;
+	bool backup_battery_chargable;
+	bool battery_backup_enable_bypass;
+	u32 backup_battery_charge_current;
+	u32 battery_backup_charge_mode;
+	u32 oc_pg_mask;
 };
 
 static inline int as3722_read(struct as3722 *as3722, u32 reg, u32 *dest)
@@ -441,6 +481,11 @@ static inline int as3722_update_bits(struct as3722 *as3722, u32 reg,
 	return regmap_update_bits(as3722->regmap, reg, mask, val);
 }
 
+static inline void as3722_allow_atomic_xfer(struct as3722 *as3722)
+{
+	i2c_shutdown_clear_adapter(as3722->client->adapter);
+}
+
 static inline int as3722_irq_get_virq(struct as3722 *as3722, int irq)
 {
 	return regmap_irq_get_virq(as3722->irq_data, irq);
@@ -449,11 +494,31 @@ static inline int as3722_irq_get_virq(struct as3722 *as3722, int irq)
 static inline bool as3722_device_rev(struct as3722 *as3722, u32 major_rev,
 		u32 minor_rev)
 {
-
 	if ((as3722->major_rev == major_rev) &&
 			(as3722->minor_rev == minor_rev))
 		return true;
 	else
 		return false;
+}
+
+static inline bool as3722_device_rev_eq_later(struct as3722 *as3722,
+	u32 major_rev, u32 minor_rev)
+{
+	u32 minor;
+
+	if (as3722->major_rev < major_rev)
+		return false;
+
+	if (as3722->major_rev > major_rev)
+		return true;
+
+	minor = as3722->minor_rev;
+	if (as3722->minor_rev >= 10)
+		minor = as3722->minor_rev / 10;
+
+	if (minor < minor_rev)
+		return false;
+
+	return true;
 }
 #endif

@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2013, NVIDIA CORPORATION.  All rights reserved.
+ * Copyright (c) 2013-2014, NVIDIA CORPORATION.  All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify it
  * under the terms and conditions of the GNU General Public License,
@@ -151,7 +151,7 @@ static const struct ov5693_reg ov5693_2592x1944_i2c[] = {
 	{0x30a0, 0xd2},
 	{0x30a2, 0x01},
 	{0x30b2, 0x00},
-	{0x30b3, 0x64},
+	{0x30b3, 0x68},
 	{0x30b4, 0x03},
 	{0x30b5, 0x04},
 	{0x30b6, 0x01},
@@ -214,6 +214,7 @@ static const struct ov5693_reg ov5693_2592x1944_i2c[] = {
 	{0x371e, 0xa1},
 	{0x371f, 0x0c},
 	{0x3721, 0x00},
+	{0x3724, 0x10},
 	{0x3726, 0x00},
 	{0x372a, 0x01},
 	{0x3730, 0x10},
@@ -342,6 +343,7 @@ static const struct ov5693_reg ov5693_2592x1944_i2c[] = {
 	{0x4315, 0x01},
 	{0x4511, 0x05},
 	{0x4512, 0x01},
+	{0x4800, 0x20}, /* dis-continuous */
 	{0x4806, 0x00},
 	{0x4816, 0x52},
 	{0x481f, 0x30},
@@ -387,7 +389,6 @@ static const struct ov5693_reg ov5693_2592x1944_i2c[] = {
 
 static const struct ov5693_reg ov5693_1296x972_i2c[] = {
 	{OV5693_TABLE_RESET, 0},/* Including sw reset */
-	{0x0103, 0x01},
 	{0x3001, 0x0a},
 	{0x3002, 0x80},
 	{0x3006, 0x00},
@@ -412,7 +413,7 @@ static const struct ov5693_reg ov5693_1296x972_i2c[] = {
 	{0x30a0, 0xd2},
 	{0x30a2, 0x01},
 	{0x30b2, 0x00},
-	{0x30b3, 0x64},
+	{0x30b3, 0x68},
 	{0x30b4, 0x03},
 	{0x30b5, 0x04},
 	{0x30b6, 0x01},
@@ -589,6 +590,7 @@ static const struct ov5693_reg ov5693_1296x972_i2c[] = {
 	{0x4315, 0x01},
 	{0x4511, 0x05},
 	{0x4512, 0x00},
+	{0x4800, 0x20}, /* dis-continuous */
 	{0x4806, 0x00},
 	{0x4816, 0x52},
 	{0x481f, 0x30},
@@ -658,7 +660,7 @@ static const struct ov5693_reg ov5693_1920x1080_i2c[] = {
 	{0x30a0, 0xd2},
 	{0x30a2, 0x01},
 	{0x30b2, 0x00},
-	{0x30b3, 0x64},
+	{0x30b3, 0x68},
 	{0x30b4, 0x03},
 	{0x30b5, 0x04},
 	{0x30b6, 0x01},
@@ -835,6 +837,7 @@ static const struct ov5693_reg ov5693_1920x1080_i2c[] = {
 	{0x4315, 0x01},
 	{0x4511, 0x05},
 	{0x4512, 0x01},
+	{0x4800, 0x20}, /* dis-continuous */
 	{0x4806, 0x00},
 	{0x4816, 0x52},
 	{0x481f, 0x30},
@@ -905,7 +908,7 @@ static const struct ov5693_reg ov5693_1280x720_120fps_i2c[] = {
 	{0x30a0, 0xd2},
 	{0x30a2, 0x01},
 	{0x30b2, 0x00},
-	{0x30b3, 0x64},
+	{0x30b3, 0x68},
 	{0x30b4, 0x03},
 	{0x30b5, 0x04},
 	{0x30b6, 0x01},
@@ -1082,6 +1085,7 @@ static const struct ov5693_reg ov5693_1280x720_120fps_i2c[] = {
 	{0x4315, 0x01},
 	{0x4511, 0x05},
 	{0x4512, 0x00},
+	{0x4800, 0x20}, /* dis-continuous */
 	{0x4806, 0x00},
 	{0x4816, 0x52},
 	{0x481f, 0x30},
@@ -1329,6 +1333,7 @@ static const struct ov5693_reg ov5693_2592x1944_HDR_24fps_i2c[] = {
 	{0x4315, 0x01},
 	{0x4511, 0x05},
 	{0x4512, 0x01},
+	{0x4800, 0x20}, /* dis-continuous */
 	{0x4806, 0x00},
 	{0x4816, 0x52},
 	{0x481f, 0x30},
@@ -1399,7 +1404,7 @@ static const struct ov5693_reg ov5693_1920x1080_HDR_30fps_i2c[] = {
 	{0x30a0, 0xd2},
 	{0x30a2, 0x01},
 	{0x30b2, 0x00},
-	{0x30b3, 0x64},
+	{0x30b3, 0x68},
 	{0x30b4, 0x03},
 	{0x30b5, 0x04},
 	{0x30b6, 0x01},
@@ -1576,6 +1581,7 @@ static const struct ov5693_reg ov5693_1920x1080_HDR_30fps_i2c[] = {
 	{0x4315, 0x01},
 	{0x4511, 0x05},
 	{0x4512, 0x01},
+	{0x4800, 0x20}, /* dis-continuous */
 	{0x4806, 0x00},
 	{0x4816, 0x52},
 	{0x481f, 0x30},
@@ -1646,7 +1652,7 @@ static const struct ov5693_reg ov5693_1296x972_HDR_30fps_i2c[] = {
 	{0x30a0, 0xd2},
 	{0x30a2, 0x01},
 	{0x30b2, 0x00},
-	{0x30b3, 0x64},
+	{0x30b3, 0x68},
 	{0x30b4, 0x03},
 	{0x30b5, 0x04},
 	{0x30b6, 0x01},
@@ -1823,6 +1829,7 @@ static const struct ov5693_reg ov5693_1296x972_HDR_30fps_i2c[] = {
 	{0x4315, 0x01},
 	{0x4511, 0x05},
 	{0x4512, 0x01},
+	{0x4800, 0x20}, /* dis-continuous */
 	{0x4806, 0x00},
 	{0x4816, 0x52},
 	{0x481f, 0x30},
@@ -1893,7 +1900,7 @@ static const struct ov5693_reg ov5693_1280x720_HDR_60fps_i2c[] = {
 	{0x30a0, 0xd2},
 	{0x30a2, 0x01},
 	{0x30b2, 0x00},
-	{0x30b3, 0x64},
+	{0x30b3, 0x68},
 	{0x30b4, 0x03},
 	{0x30b5, 0x04},
 	{0x30b6, 0x01},
@@ -2070,6 +2077,7 @@ static const struct ov5693_reg ov5693_1280x720_HDR_60fps_i2c[] = {
 	{0x4315, 0x01},
 	{0x4511, 0x05},
 	{0x4512, 0x01},
+	{0x4800, 0x20}, /* dis-continuous */
 	{0x4806, 0x00},
 	{0x4816, 0x52},
 	{0x481f, 0x30},
@@ -2134,15 +2142,6 @@ static const struct ov5693_reg *mode_table[] = {
 	[OV5693_MODE_1296x972_HDR]	= ov5693_1296x972_HDR_30fps_i2c,
 	[OV5693_MODE_1280x720_HDR_60FPS] = ov5693_1280x720_HDR_60fps_i2c,
 };
-
-static int ov5693_i2c_rd8(struct ov5693_info *info, u16 reg, u8 *val)
-{
-	unsigned int data;
-	int ret = regmap_read(info->regmap, reg, &data);
-	*val = data;
-
-	return ret;
-}
 
 static int ov5693_i2c_wr_table(struct ov5693_info *info,
 				const struct ov5693_reg table[])
@@ -2640,7 +2639,6 @@ static int ov5693_power_off(struct ov5693_info *info)
 		if (0 > err)
 			return err;
 		info->power_on = false;
-		ov5693_gpio_pwrdn(info, 1);
 		ov5693_mclk_disable(info);
 		sysedp_set_state(info->sysedpc, 0);
 	} else {
@@ -2667,8 +2665,7 @@ static int ov5693_power_on(struct ov5693_info *info, bool standby)
 		err = info->pdata->power_on(pw);
 		if (err >= 0) {
 			info->power_on = true;
-			ov5693_gpio_pwrdn(info, standby ? 1 : 0);
-			msleep(100);
+			info->pwr_dev = NVC_PWR_ON;
 		}
 	} else {
 		dev_err(&info->i2c_client->dev,
@@ -2757,7 +2754,6 @@ static void ov5693_regulator_get(struct ov5693_info *info,
 		dev_err(&info->i2c_client->dev, "%s %s ERR: %d\n",
 			__func__, vreg_name, (int)reg);
 		err = PTR_ERR(reg);
-		reg = NULL;
 	} else {
 		dev_dbg(&info->i2c_client->dev, "%s: %s\n",
 			__func__, vreg_name);
@@ -2772,11 +2768,12 @@ static void ov5693_pm_init(struct ov5693_info *info)
 
 	ov5693_gpio_init(info);
 
-	ov5693_regulator_get(info, &pw->dvdd, "dvdd");
+	ov5693_regulator_get(info, &pw->avdd, info->pdata->regulators.avdd);
 
-	ov5693_regulator_get(info, &pw->avdd, "avdd_ov5693");
+	ov5693_regulator_get(info, &pw->dvdd, info->pdata->regulators.dvdd);
 
-	ov5693_regulator_get(info, &pw->dovdd, "dovdd");
+	ov5693_regulator_get(info, &pw->dovdd, info->pdata->regulators.dovdd);
+
 	info->power_on = false;
 }
 
@@ -2910,14 +2907,43 @@ ov5693_mode_wr_err:
 
 static int ov5693_get_fuse_id(struct ov5693_info *info)
 {
-	int i;
-	regmap_write(info->regmap, 0x3D84, 0xC0);
-	regmap_write(info->regmap, 0x3D81, 0x40);
-	for (i = 0; i < OV5693_FUSE_ID_SIZE; i++) {
-		ov5693_i2c_rd8(info, 0x3D00 + i, &info->fuseid.data[i]);
-		dev_dbg(&info->i2c_client->dev, "ov5693 fuse_id byte %d:\t0x%0x\n",
-				i, info->fuseid.data[i]);
+	/* fuse stored at ov5693 bank 0 */
+	int err;
+	err = regmap_write(info->regmap, 0x0100, 0x01);
+	if (err != 0) {
+		dev_err(&info->i2c_client->dev,
+			"%s ERR %d: cannot write stream mode\n", __func__,
+			err);
+		return err;
 	}
+	usleep_range(10000, 11000);
+
+	err = regmap_write(info->regmap, 0x3D84, 0xC0);
+	if (err != 0) {
+		dev_err(&info->i2c_client->dev,
+			"%s ERR %d: cannot write bank index 0\n", __func__,
+			err);
+		return err;
+	}
+	usleep_range(10000, 11000);
+
+	err = regmap_write(info->regmap, 0x3D81, 0x01);
+	if (err != 0) {
+		dev_err(&info->i2c_client->dev,
+			"%s ERR %d: cannot load OTP data\n", __func__, err);
+		return err;
+	}
+	usleep_range(10000, 11000);
+
+	err = regmap_bulk_read(info->regmap, 0x3D00,
+		info->fuseid.data, OV5693_FUSE_ID_SIZE);
+	if (err != 0) {
+		dev_err(&info->i2c_client->dev,
+			"%s ERR %d: cannot read OTP buffer\n", __func__,
+			err);
+		return err;
+	}
+
 	info->fuseid.size = OV5693_FUSE_ID_SIZE;
 
 	return 0;
@@ -3025,8 +3051,34 @@ static long ov5693_ioctl(struct file *file, unsigned int cmd, unsigned long arg)
 	struct ov5693_info *info = file->private_data;
 	int err;
 
-	switch (cmd) {
-	case OV5693_IOCTL_SET_MODE:
+	switch (_IOC_NR(cmd)) {
+	case _IOC_NR(OV5693_IOCTL_SET_POWER):
+	{
+		u32 powerlevel = (u32) arg;
+
+		if (!info->pdata)
+			break;
+		if (powerlevel > NVC_PWR_ON) {
+			dev_err(&info->i2c_client->dev,
+				"%s:Invalid power level.\n",
+			__func__);
+			return -EFAULT;
+		}
+
+		err = ov5693_pm_wr(info, powerlevel);
+		return err;
+	}
+	case _IOC_NR(OV5693_IOCTL_GET_CAPS):
+		if (copy_to_user((void __user *)arg,
+				 info->pdata->cap,
+				 sizeof(struct nvc_imager_cap))) {
+			dev_err(&info->i2c_client->dev,
+				"%s copy_to_user err line %d\n",
+				__func__, __LINE__);
+			return -EFAULT;
+		}
+		return 0;
+	case _IOC_NR(OV5693_IOCTL_SET_MODE):
 	{
 		struct ov5693_mode mode;
 		if (copy_from_user(&mode,
@@ -3039,7 +3091,7 @@ static long ov5693_ioctl(struct file *file, unsigned int cmd, unsigned long arg)
 		}
 		return ov5693_set_mode(info, &mode);
 	}
-	case OV5693_IOCTL_GET_STATUS: {
+	case _IOC_NR(OV5693_IOCTL_GET_STATUS): {
 		u8 status = 0;
 		if (copy_to_user((void __user *)arg, &status, sizeof(status))) {
 			dev_err(&info->i2c_client->dev,
@@ -3050,7 +3102,7 @@ static long ov5693_ioctl(struct file *file, unsigned int cmd, unsigned long arg)
 		return 0;
 		}
 
-	case OV5693_IOCTL_SET_GROUP_HOLD: {
+	case _IOC_NR(OV5693_IOCTL_SET_GROUP_HOLD): {
 		struct ov5693_ae ae;
 		if (copy_from_user(&ae, (const void __user *)arg,
 				sizeof(struct ov5693_ae))) {
@@ -3062,14 +3114,14 @@ static long ov5693_ioctl(struct file *file, unsigned int cmd, unsigned long arg)
 		return ov5693_set_group_hold(info, &ae);
 		}
 
-	case OV5693_IOCTL_SET_FRAME_LENGTH:
+	case _IOC_NR(OV5693_IOCTL_SET_FRAME_LENGTH):
 		return ov5693_set_frame_length(info, (u32)arg, true);
 
-	case OV5693_IOCTL_SET_COARSE_TIME:
+	case _IOC_NR(OV5693_IOCTL_SET_COARSE_TIME):
 		return ov5693_set_coarse_time(info, (u32)arg,
 					OV5693_INVALID_COARSE_TIME, true);
 
-	case OV5693_IOCTL_SET_HDR_COARSE_TIME:
+	case _IOC_NR(OV5693_IOCTL_SET_HDR_COARSE_TIME):
 	{
 		struct ov5693_hdr *hdrcoarse = (struct ov5693_hdr *)arg;
 		int ret = ov5693_set_coarse_time(info,
@@ -3079,11 +3131,10 @@ static long ov5693_ioctl(struct file *file, unsigned int cmd, unsigned long arg)
 		return ret;
 	}
 
-
-	case OV5693_IOCTL_SET_GAIN:
+	case _IOC_NR(OV5693_IOCTL_SET_GAIN):
 		return ov5693_set_gain(info, (u32)arg, true);
 
-	case OV5693_IOCTL_GET_FUSEID:
+	case _IOC_NR(OV5693_IOCTL_GET_FUSEID):
 	{
 		err = ov5693_get_fuse_id(info);
 
@@ -3102,7 +3153,7 @@ static long ov5693_ioctl(struct file *file, unsigned int cmd, unsigned long arg)
 		return 0;
 	}
 
-	case OV5693_IOCTL_READ_OTP_BANK:
+	case _IOC_NR(OV5693_IOCTL_READ_OTP_BANK):
 	{
 		struct ov5693_otp_bank bank;
 		if (copy_from_user(&bank,
@@ -3129,7 +3180,7 @@ static long ov5693_ioctl(struct file *file, unsigned int cmd, unsigned long arg)
 		return 0;
 	}
 
-	case OV5693_IOCTL_SET_CAL_DATA:
+	case _IOC_NR(OV5693_IOCTL_SET_CAL_DATA):
 	{
 		if (copy_from_user(&info->cal, (const void __user *)arg,
 					sizeof(info->cal))) {
@@ -3141,8 +3192,11 @@ static long ov5693_ioctl(struct file *file, unsigned int cmd, unsigned long arg)
 		return 0;
 	}
 
-	case OV5693_IOCTL_GET_EEPROM_DATA:
+	case _IOC_NR(OV5693_IOCTL_GET_EEPROM_DATA):
 		{
+			if (!info->pdata->has_eeprom)
+				return -EFAULT;
+
 			ov5693_read_eeprom(info,
 				0,
 				OV5693_EEPROM_SIZE,
@@ -3158,9 +3212,13 @@ static long ov5693_ioctl(struct file *file, unsigned int cmd, unsigned long arg)
 		}
 		return 0;
 
-	case OV5693_IOCTL_SET_EEPROM_DATA:
+	case _IOC_NR(OV5693_IOCTL_SET_EEPROM_DATA):
 		{
 			int i;
+
+			if (!info->pdata->has_eeprom)
+				return -EFAULT;
+
 			if (copy_from_user(info->eeprom_buf,
 				(const void __user *)arg, OV5693_EEPROM_SIZE)) {
 				dev_err(&info->i2c_client->dev,
@@ -3215,7 +3273,7 @@ static int ov5693_open(struct inode *inode, struct file *file)
 	return err;
 }
 
-int ov5693_release(struct inode *inode, struct file *file)
+static int ov5693_release(struct inode *inode, struct file *file)
 {
 	struct ov5693_info *info = file->private_data;
 
@@ -3230,6 +3288,9 @@ static const struct file_operations ov5693_fileops = {
 	.owner = THIS_MODULE,
 	.open = ov5693_open,
 	.unlocked_ioctl = ov5693_ioctl,
+#ifdef CONFIG_COMPAT
+	.compat_ioctl = ov5693_ioctl,
+#endif
 	.release = ov5693_release,
 };
 
@@ -3246,7 +3307,8 @@ static int ov5693_remove(struct i2c_client *client)
 	dev_dbg(&info->i2c_client->dev, "%s\n", __func__);
 	misc_deregister(&info->miscdev);
 	sysedp_free_consumer(info->sysedpc);
-	ov5693_eeprom_device_release(info);
+	if (info->pdata->has_eeprom)
+		ov5693_eeprom_device_release(info);
 	ov5693_del(info);
 	return 0;
 }
@@ -3270,7 +3332,7 @@ static int ov5693_platform_power_on(struct ov5693_power_rail *pw)
 			goto ov5693_vcm_fail;
 	}
 
-	ov5693_gpio_wr(info, OV5693_GPIO_TYPE_PWRDN, 0);
+	ov5693_gpio_pwrdn(info, 0);
 	usleep_range(10, 20);
 
 	err = regulator_enable(pw->avdd);
@@ -3282,7 +3344,7 @@ static int ov5693_platform_power_on(struct ov5693_power_rail *pw)
 		goto ov5693_iovdd_fail;
 
 	usleep_range(1, 2);
-	ov5693_gpio_wr(info, OV5693_GPIO_TYPE_PWRDN, 1);
+	ov5693_gpio_pwrdn(info, 1);
 
 	usleep_range(300, 310);
 
@@ -3306,7 +3368,7 @@ static int ov5693_platform_power_off(struct ov5693_power_rail *pw)
 						regulators);
 
 	usleep_range(21, 25);
-	ov5693_gpio_wr(info, OV5693_GPIO_TYPE_PWRDN, 0);
+	ov5693_gpio_pwrdn(info, 0);
 	usleep_range(1, 2);
 
 	regulator_disable(pw->dovdd);
@@ -3438,11 +3500,13 @@ static int ov5693_probe(
 		return err;
 	}
 
-	err = ov5693_eeprom_device_init(info);
-	if (err) {
-		dev_err(&client->dev,
+	if (info->pdata->has_eeprom) {
+		err = ov5693_eeprom_device_init(info);
+		if (err) {
+			dev_err(&client->dev,
 			"Failed to allocate eeprom register map: %d\n", err);
-		return err;
+			return err;
+		}
 	}
 
 	mclk_name = info->pdata->mclk_name ?
@@ -3456,10 +3520,8 @@ static int ov5693_probe(
 
 	i2c_set_clientdata(client, info);
 	ov5693_pm_init(info);
-	if (!info->regulators.avdd || !info->regulators.dovdd)
-		return -EFAULT;
-
-	info->sysedpc = sysedp_create_consumer("ov5693", "ov5693");
+	if (IS_ERR(info->regulators.avdd) || IS_ERR(info->regulators.dovdd))
+			return -EFAULT;
 
 	ov5693_sdata_init(info);
 	if (info->pdata->cfg & (NVC_CFG_NODEV | NVC_CFG_BOOT_INIT)) {
@@ -3493,12 +3555,15 @@ static int ov5693_probe(
 		return -ENODEV;
 	}
 
+	info->sysedpc = sysedp_create_consumer("ov5693", info->devname);
+
 	dev_dbg(&client->dev, "ov5693 sensor driver loading done\n");
 	return 0;
 }
 
 static const struct i2c_device_id ov5693_id[] = {
 	{ "ov5693", 0 },
+	{ "ov5693.1", 0 },
 	{ },
 };
 

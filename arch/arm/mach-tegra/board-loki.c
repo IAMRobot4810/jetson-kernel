@@ -50,6 +50,7 @@
 #include <linux/i2c.h>
 #include <linux/i2c-tegra.h>
 #include <linux/tegra-soc.h>
+#include <linux/tegra-powergate.h>
 #include <linux/platform_data/serial-tegra.h>
 #include <linux/edp.h>
 #include <linux/mfd/palmas.h>
@@ -223,7 +224,10 @@ static struct tegra_asoc_platform_data loki_audio_pdata_rt5639 = {
 	.gpio_codec3 = -1,
 	.i2s_param[HIFI_CODEC]       = {
 		.audio_port_id = 1,
-		.is_i2s_master = 0,
+		.is_i2s_master = 1,
+		.sample_size   = 16,
+		.channels      = 2,
+		.bit_clk       = 1536000,
 		.i2s_mode = TEGRA_DAIFMT_I2S,
 	},
 	.i2s_param[BT_SCO] = {
@@ -326,6 +330,8 @@ static struct platform_device *loki_devices[] __initdata = {
 	&bluetooth_dit_device,
 	&baseband_dit_device,
 	&tegra_hda_device,
+	&tegra_offload_device,
+	&tegra30_avp_audio_device,
 #if defined(CONFIG_TEGRA_CEC_SUPPORT)
 	&tegra_cec_device,
 #endif
@@ -343,7 +349,7 @@ static struct tegra_usb_platform_data tegra_udc_pdata = {
 		.vbus_pmu_irq = 0,
 		.vbus_gpio = -1,
 		.dcp_current_limit_ma = 2000,
-		.charging_supported = false,
+		.charging_supported = true,
 		.remote_wakeup_supported = false,
 	},
 	.u_cfg.utmi = {
@@ -488,6 +494,9 @@ static void loki_usb_init(void)
 	tegra_ehci1_utmi_pdata.support_pmu_vbus = true;
 	tegra_ehci1_utmi_pdata.vbus_extcon_dev_name = "palmas-extcon";
 
+	/* Enable Y-Cable support */
+	tegra_ehci1_utmi_pdata.u_data.host.support_y_cable = true;
+
 	if (!(usb_port_owner_info & UTMI1_PORT_OWNER_XUSB)) {
 		tegra_otg_device.dev.platform_data = &tegra_otg_pdata;
 		platform_device_register(&tegra_otg_device);
@@ -543,6 +552,18 @@ static void loki_xusb_init(void)
 				xusb_pdata.portmap &= ~(
 					TEGRA_XUSB_USB2_P1 | TEGRA_XUSB_SS_P0 |
 					TEGRA_XUSB_USB2_P2 | TEGRA_XUSB_SS_P1);
+		} else if (board_info.board_id == BOARD_P2530 &&
+					board_info.sku == BOARD_SKU_FOSTER) {
+			if (!(usb_port_owner_info & UTMI1_PORT_OWNER_XUSB))
+				xusb_pdata.portmap &= ~(TEGRA_XUSB_USB2_P0);
+
+			if (!(usb_port_owner_info & UTMI2_PORT_OWNER_XUSB))
+				xusb_pdata.portmap &= ~(TEGRA_XUSB_USB2_P1 |
+					TEGRA_XUSB_SS_P0);
+
+			if (!(usb_port_owner_info & UTMI3_PORT_OWNER_XUSB))
+				xusb_pdata.portmap &= ~(TEGRA_XUSB_USB2_P2 |
+					TEGRA_XUSB_SS_P1);
 		} else {
 			pr_info("Shield ERS 0x%x\n", board_info.board_id);
 			/* Shield ERS */
@@ -595,6 +616,7 @@ static struct tegra_usb_modem_power_platform_data baseband_pdata = {
 	.short_autosuspend_delay = 50,
 	.tegra_ehci_device = &tegra_ehci2_device,
 	.tegra_ehci_pdata = &tegra_ehci2_hsic_baseband_pdata,
+	.mdm_power_report_gpio = -1,
 };
 
 static struct platform_device icera_bruce_device = {
@@ -659,6 +681,13 @@ struct of_dev_auxdata loki_auxdata_lookup[] __initdata = {
 	T124_I2C_OF_DEV_AUXDATA,
 	OF_DEV_AUXDATA("nvidia,tegra124-xhci", 0x70090000, "tegra-xhci",
 				&xusb_pdata),
+	OF_DEV_AUXDATA("nvidia,tegra124-nvavp", 0x60001000, "nvavp",
+				NULL),
+	OF_DEV_AUXDATA("nvidia,tegra124-pwm", 0x7000a000, "tegra-pwm", NULL),
+	OF_DEV_AUXDATA("nvidia,tegra124-efuse", TEGRA_FUSE_BASE, "tegra-fuse",
+				NULL),
+	OF_DEV_AUXDATA("nvidia,tegra124-camera", 0, "pcl-generic",
+				NULL),
 	{}
 };
 #endif
@@ -688,6 +717,16 @@ struct rm_spi_ts_platform_data rm31080ts_loki_data_t_1_95 = {
 	.gpio_sensor_select1 = false,
 };
 
+struct rm_spi_ts_platform_data rm31080ts_loki_data_jdi_5 = {
+	.gpio_reset = TOUCH_GPIO_RST_RAYDIUM_SPI,
+	.config = 0,
+	.platform_id = RM_PLATFORM_L005,
+	.name_of_clock = "clk_out_2",
+	.name_of_clock_con = "extern2",
+	.gpio_sensor_select0 = false,
+	.gpio_sensor_select1 = true,
+};
+
 static struct tegra_spi_device_controller_data dev_cdata = {
 	.rx_clk_tap_delay = 0,
 	.tx_clk_tap_delay = 16,
@@ -712,10 +751,12 @@ static int __init loki_touch_init(void)
 	if (bi.board_id == BOARD_P2530 && bi.sku == BOARD_SKU_FOSTER)
 		return 0;
 
-	if (tegra_get_touch_panel_id() == TOUCH_PANEL_THOR_WINTEK)
+	if (tegra_get_touch_panel_id() == TOUCHPANEL_THOR_WINTEK)
 		rm31080a_loki_spi_board[0].platform_data =
 					&rm31080ts_loki_data_t_1_95;
-
+	else if (tegra_get_touch_panel_id() == TOUCHPANEL_LOKI_JDI5)
+		rm31080a_loki_spi_board[0].platform_data =
+					&rm31080ts_loki_data_jdi_5;
 	/*
 	** remove touch clock initialization for ffd fab a3, higher
 	** Move clock from tegra clock to external xtal
@@ -809,17 +850,15 @@ static void __init tegra_loki_late_init(void)
 	loki_touch_init();
 	loki_panel_init();
 	loki_kbc_init();
-	loki_pmon_init();
 #ifdef CONFIG_TEGRA_WDT_RECOVERY
 	tegra_wdt_recovery_init();
 #endif
 	tegra_serial_debug_init(TEGRA_UARTD_BASE, INT_WDT_CPU, NULL, -1, -1);
-
 	loki_sensors_init();
+
 	loki_fan_init();
 	loki_soctherm_init();
 	loki_setup_bluedroid_pm();
-	tegra_register_fuse();
 	tegra_serial_debug_init(TEGRA_UARTD_BASE, INT_WDT_CPU, NULL, -1, -1);
 #ifdef CONFIG_C2PORT_LOKI
 	tegra_loki_mcu_debugger_init();
@@ -832,7 +871,12 @@ static void __init tegra_loki_dt_init(void)
 	tegra_get_display_board_info(&display_board_info);
 
 	tegra_loki_early_init();
+#ifdef CONFIG_NVMAP_USE_CMA_FOR_CARVEOUT
+	carveout_linear_set(&tegra_generic_cma_dev);
+	carveout_linear_set(&tegra_vpr_cma_dev);
+#endif
 #ifdef CONFIG_USE_OF
+	loki_camera_auxdata(loki_auxdata_lookup);
 	of_platform_populate(NULL,
 		of_default_bus_match_table, loki_auxdata_lookup,
 		&platform_bus);
@@ -846,9 +890,9 @@ static void __init tegra_loki_reserve(void)
 #if defined(CONFIG_NVMAP_CONVERT_CARVEOUT_TO_IOVMM) || \
 		defined(CONFIG_TEGRA_NO_CARVEOUT)
 	/* 1920*1200*4*2 = 18432000 bytes */
-	tegra_reserve(0, SZ_16M + SZ_2M, SZ_16M);
+	tegra_reserve4(0, SZ_16M + SZ_2M, SZ_16M, 186 * SZ_1M);
 #else
-	tegra_reserve(SZ_1G, SZ_16M + SZ_2M, SZ_4M);
+	tegra_reserve4(SZ_1G, SZ_16M + SZ_2M, SZ_4M, 186 * SZ_1M);
 #endif
 }
 

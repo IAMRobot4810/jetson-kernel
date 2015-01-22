@@ -1,4 +1,4 @@
-# Copyright (c) 2012, NVIDIA CORPORATION.  All rights reserved.
+# Copyright (c) 2012-2014, NVIDIA CORPORATION.  All rights reserved.
 #
 # This program is free software; you can redistribute it and/or modify it
 # under the terms and conditions of the GNU General Public License,
@@ -18,16 +18,8 @@ comment "NVIDIA Tegra options"
 
 config ARCH_TEGRA_2x_SOC
 	bool "Enable support for Tegra20 family"
-	depends on !ARCH_TEGRA_3x_SOC
-	depends on !ARCH_TEGRA_11x_SOC
 	depends on !ARCH_TEGRA_12x_SOC
-	depends on !ARCH_TEGRA_14x_SOC
 	select ARCH_NEEDS_CPU_IDLE_COUPLED if SMP
-	select ARCH_SUPPORTS_MSI if PCI_TEGRA
-	select ARCH_TEGRA_HAS_ARM_SCU
-	select ARCH_TEGRA_HAS_PCIE
-	select ARM_CPU_SUSPEND if PM
-	select ARM_ERRATA_716044
 	select ARM_ERRATA_720789
 	select ARM_ERRATA_742230 if SMP
 	select ARM_ERRATA_751472
@@ -35,23 +27,13 @@ config ARCH_TEGRA_2x_SOC
 	select ARM_ERRATA_761320 if SMP
 	select ARM_ERRATA_764369 if SMP
 	select ARM_GIC
-	select ARM_SAVE_DEBUG_CONTEXT if PM_SLEEP
 	select COMMON_CLK
-	select CPA
 	select CPU_FREQ_TABLE if CPU_FREQ
 	select CPU_V7
-	select NVMAP_CACHE_MAINT_BY_SET_WAYS if TEGRA_NVMAP
-	select NVMAP_DEFERRED_CACHE_MAINT if TEGRA_NVMAP
-	select NVMAP_HANDLE_MARSHAL if TEGRA_NVMAP
-	select NVMAP_OUTER_CACHE_MAINT_BY_SET_WAYS if TEGRA_NVMAP
-	select PCI_MSI if PCI_TEGRA
 	select PINCTRL
 	select PINCTRL_TEGRA20
-	select POWER_RESET
-	select SYSTEM_PMIC
+	select PL310_ERRATA_727915 if CACHE_L2X0
 	select PL310_ERRATA_769419 if CACHE_L2X0
-	select PM_GENERIC_DOMAINS if PM
-	select SOC_BUS
 	select USB_ARCH_HAS_EHCI if USB_SUPPORT
 	select USB_ULPI if USB_PHY
 	select USB_ULPI_VIEWPORT if USB_PHY
@@ -61,44 +43,20 @@ config ARCH_TEGRA_2x_SOC
 
 config ARCH_TEGRA_3x_SOC
 	bool "Enable support for Tegra30 family"
-	depends on !ARCH_TEGRA_11x_SOC
 	depends on !ARCH_TEGRA_12x_SOC
-	depends on !ARCH_TEGRA_14x_SOC
-	select ARCH_SUPPORTS_MSI if PCI_TEGRA
-	select ARCH_TEGRA_HAS_ARM_SCU
-	select ARCH_TEGRA_HAS_PCIE
-	select ARCH_TEGRA_HAS_SATA
-	select ARCH_TEGRA_HAS_DUAL_3D
-	select ARCH_TEGRA_HAS_DUAL_CPU_CLUSTERS
-	select ARM_CPU_SUSPEND if PM
 	select ARM_ERRATA_743622
 	select ARM_ERRATA_751472
 	select ARM_ERRATA_754322
 	select ARM_ERRATA_761320 if SMP
 	select ARM_ERRATA_764369 if SMP
 	select ARM_GIC
-	select ARM_SAVE_DEBUG_CONTEXT if PM_SLEEP
 	select COMMON_CLK
-	select CPA
 	select CPU_FREQ_TABLE if CPU_FREQ
 	select CPU_V7
-	select GIC_SET_MULTIPLE_CPUS if SMP
-	select NVMAP_CACHE_MAINT_BY_SET_WAYS if TEGRA_NVMAP
-	select NVMAP_DEFERRED_CACHE_MAINT if TEGRA_NVMAP
-	select NVMAP_HANDLE_MARSHAL if TEGRA_NVMAP
-	select NVMAP_OUTER_CACHE_MAINT_BY_SET_WAYS if TEGRA_NVMAP
-	select PCI_MSI if PCI_TEGRA
 	select PINCTRL
 	select PINCTRL_TEGRA30
-	select POWER_RESET
-	select SYSTEM_PMIC
 	select PL310_ERRATA_727915
 	select PL310_ERRATA_769419 if CACHE_L2X0
-	select PM_GENERIC_DOMAINS if PM
-	select REPORT_PRESENT_CPUS if TEGRA_AUTO_HOTPLUG
-	select SOC_BUS
-	select TEGRA_ERRATA_1053704 if TEGRA_IOMMU_SMMU
-	select TEGRA_LP2_CPU_TIMER if HAVE_ARM_TWD && !TEGRA_RAIL_OFF_MULTIPLE_CPUS
 	select USB_ARCH_HAS_EHCI if USB_SUPPORT
 	select USB_ULPI if USB_PHY
 	select USB_ULPI_VIEWPORT if USB_PHY
@@ -106,57 +64,9 @@ config ARCH_TEGRA_3x_SOC
 	  Support for NVIDIA Tegra T30 processor family, based on the
 	  ARM CortexA9MP CPU and the ARM PL310 L2 cache controller
 
-config ARCH_TEGRA_11x_SOC
-	bool "Tegra 11x family SOC"
-	depends on !ARCH_TEGRA_12x_SOC
-	depends on !ARCH_TEGRA_14x_SOC
-	select ARCH_HAS_PASR
-	select ARCH_TEGRA_4GB_MEMORY
-	select ARCH_TEGRA_HAS_CL_DVFS
-	select ARCH_TEGRA_HAS_DUAL_CPU_CLUSTERS
-	select ARCH_TEGRA_HAS_SYMMETRIC_CPU_PWR_GATE
-	select ARM_CPU_SUSPEND if PM
-	select ARM_ERRATA_798181
-	select ARM_ERRATA_799270
-	select ARM_GIC
-	select ARM_L1_CACHE_SHIFT_6
-	select ARM_SAVE_DEBUG_CONTEXT if PM_SLEEP
-	select CPU_V7
-	select HAVE_ARM_ARCH_TIMER
-	select NVMAP_CACHE_MAINT_BY_SET_WAYS if TEGRA_NVMAP
-	select NVMAP_CACHE_MAINT_BY_SET_WAYS_ON_ONE_CPU if TEGRA_NVMAP
-	select NVMAP_DEFERRED_CACHE_MAINT if TEGRA_NVMAP
-	select NVMAP_HANDLE_MARSHAL if TEGRA_NVMAP
-	select PINCTRL
-	select PINCTRL_TEGRA114
-	select POWER_RESET
-	select SYSTEM_PMIC
-	select PM_GENERIC_DOMAINS if PM
-	select REPORT_PRESENT_CPUS if TEGRA_AUTO_HOTPLUG
-	select SOC_BUS
-	select TEGRA_DUAL_CBUS
-	select TEGRA_CORE_EDP_LIMITS
-	select TEGRA_ERRATA_977223
-	select TEGRA_ERRATA_1053704 if TEGRA_IOMMU_SMMU
-	select TEGRA_ERRATA_1157520
-	select TEGRA_ISOMGR
-	select TEGRA_ISOMGR_SYSFS
-	select TEGRA_LP2_CPU_TIMER if !TEGRA_RAIL_OFF_MULTIPLE_CPUS
-	select TEGRA_MC_PTSA if !TEGRA_FPGA_PLATFORM
-	select TEGRA_VDD_CORE_OVERRIDE if TEGRA_EMC_SCALING_ENABLE
-	select USB_ARCH_HAS_EHCI if USB_SUPPORT
-	select USB_EHCI_TEGRA if USB_SUPPORT
-	select USB_ULPI if USB_SUPPORT
-	select USB_ULPI_VIEWPORT if USB_SUPPORT
-	select PROC_DEVICETREE
-	help
-	  Support for NVIDIA Tegra 11x family of SoCs, based upon the
-	  ARM Cortex-A15MP CPU
-
 config ARCH_TEGRA_12x_SOC
 	bool "Tegra 12x family SOC"
-	depends on !ARCH_TEGRA_14x_SOC
-	select ARCH_TEGRA_HAS_DUAL_CPU_CLUSTERS
+	select ARCH_TEGRA_HAS_DUAL_CPU_CLUSTERS if !ARM64
 	select ARCH_TEGRA_HAS_PCIE
 	select CPU_V7
 	select ARM_L1_CACHE_SHIFT_6
@@ -177,10 +87,8 @@ config ARCH_TEGRA_12x_SOC
 	select TEGRA_LP2_CPU_TIMER if !TEGRA_RAIL_OFF_MULTIPLE_CPUS
 	select ARCH_SUPPORTS_MSI if PCI_TEGRA
 	select PCI_MSI if PCI_TEGRA
-	select NVMAP_CACHE_MAINT_BY_SET_WAYS if TEGRA_NVMAP
-	select NVMAP_CACHE_MAINT_BY_SET_WAYS_ON_ONE_CPU if TEGRA_NVMAP
-	select NVMAP_DEFERRED_CACHE_MAINT if TEGRA_NVMAP
-	select NVMAP_HANDLE_MARSHAL if TEGRA_NVMAP
+	select NVMAP_CACHE_MAINT_BY_SET_WAYS if TEGRA_NVMAP && !ARM64
+	select NVMAP_CACHE_MAINT_BY_SET_WAYS_ON_ONE_CPU if TEGRA_NVMAP && !ARM64
 	select ARCH_TEGRA_HAS_CL_DVFS
 	select TEGRA_DUAL_CBUS
 	select SOC_BUS
@@ -192,7 +100,7 @@ config ARCH_TEGRA_12x_SOC
 	select SYSTEM_PMIC
 	select TEGRA_DC_TEMPORAL_DITHER
 	select TEGRA_VDD_CORE_OVERRIDE if TEGRA_EMC_SCALING_ENABLE
-	select REGULATOR_TEGRA_DFLL_BYPASS
+	select REGULATOR_TEGRA_DFLL_BYPASS if !ARCH_TEGRA_13x_SOC
 	select HAVE_ARM_ARCH_TIMER
 	select ARCH_HAS_PASR
 	select POWER_SUPPLY
@@ -203,50 +111,6 @@ config ARCH_TEGRA_12x_SOC
 	help
 	  Support for NVIDIA Tegra 12x family of SoCs, based upon the
 	  ARM Cortex-A15MP CPU
-
-config ARCH_TEGRA_14x_SOC
-	bool "Tegra 14x family SOC"
-	select ARCH_HAS_PASR
-	select ARCH_TEGRA_HAS_ARM_SCU
-	select ARCH_TEGRA_HAS_CL_DVFS
-	select ARCH_TEGRA_HAS_SYMMETRIC_CPU_PWR_GATE
-	select ARM_CPU_SUSPEND if PM
-	select ARM_ERRATA_754322
-	select ARM_ERRATA_764369 if SMP
-	select ARM_GIC
-	select ARM_SAVE_DEBUG_CONTEXT if PM_SLEEP
-	select PINCTRL
-	select POWER_RESET
-	select SYSTEM_PMIC
-	select ARM_SAVE_DEBUG_CONTEXT if PM_SLEEP
-	select ARCH_TEGRA_HAS_DUAL_CPU_CLUSTERS
-	select CPA
-	select CPU_V7
-	select GIC_SET_MULTIPLE_CPUS if SMP
-	select NVMAP_CACHE_MAINT_BY_SET_WAYS if TEGRA_NVMAP
-	select NVMAP_DEFERRED_CACHE_MAINT if TEGRA_NVMAP
-	select NVMAP_HANDLE_MARSHAL if TEGRA_NVMAP
-	select NVMAP_OUTER_CACHE_MAINT_BY_SET_WAYS if TEGRA_NVMAP
-	select PM_GENERIC_DOMAINS if PM
-	select REPORT_PRESENT_CPUS if TEGRA_AUTO_HOTPLUG
-	select SOC_BUS
-	select TEGRA_DISABLE_BBC_LATENCY_ALLOWANCE
-	select TEGRA_DUAL_CBUS
-	select TEGRA_ERRATA_977223
-	select TEGRA_ERRATA_1053704 if TEGRA_IOMMU_SMMU
-	select TEGRA_ERRATA_1213083
-	select TEGRA_ERRATA_1252872
-	select TEGRA_ISOMGR
-	select TEGRA_ISOMGR_SYSFS
-	select TEGRA_LP2_CPU_TIMER if HAVE_ARM_TWD && !TEGRA_RAIL_OFF_MULTIPLE_CPUS
-	select TEGRA_VDD_CORE_OVERRIDE if TEGRA_EMC_SCALING_ENABLE
-	select USB_ARCH_HAS_EHCI if USB_SUPPORT
-	select USB_EHCI_TEGRA if USB_SUPPORT
-	select USB_ULPI if USB_SUPPORT
-	select USB_ULPI_VIEWPORT if USB_SUPPORT
-	help
-	  Support for NVIDIA Tegra 14x family of SoCs, based upon the
-	  ARM CortexA9MP CPU and the ARM PL310 L2 cache controller
 
 config TEGRA_NO_CARVEOUT
 	bool "Disable Tegra carveout"
@@ -295,6 +159,7 @@ config MACH_ARDBEG
        depends on ARCH_TEGRA_12x_SOC || ARCH_TEGRA_11x_SOC
        select MACH_HAS_SND_SOC_TEGRA_RT5639 if SND_SOC
        select MACH_HAS_SND_SOC_TEGRA_RT5645 if SND_SOC
+       select MACH_HAS_SND_SOC_TEGRA_MAX98090 if SND_SOC
        select SYSEDP_FRAMEWORK
        help
          Support for NVIDIA ARDBEG Development platform
@@ -304,8 +169,15 @@ config MACH_LOKI
        depends on ARCH_TEGRA_12x_SOC
        select MACH_HAS_SND_SOC_TEGRA_RT5639 if SND_SOC
        select MACH_HAS_SND_SOC_TEGRA_RT5645 if SND_SOC
+       select LEDS_PWM
        help
          Support for NVIDIA LOKI Development platform
+
+config MACH_P2360
+       bool "P2360 board"
+       depends on ARCH_TEGRA_12x_SOC
+       help
+         Support for NVIDIA P2360 Automotive Development platform
 
 config MACH_VCM30_T124
        bool "VCM30_T124(Automotive) board"
@@ -321,46 +193,6 @@ config MACH_LAGUNA
 	 select MACH_HAS_SND_SOC_TEGRA_MAX98090 if SND_SOC
 	 help
 	 Support for NVIDIA LAGUNA Development platform
-
-config MACH_DALMORE
-       bool "Dalmore board"
-       depends on ARCH_TEGRA_11x_SOC
-       select MACH_HAS_SND_SOC_TEGRA_RT5639 if SND_SOC
-       select MACH_HAS_SND_SOC_TEGRA_RT5640 if SND_SOC
-       help
-         Support for NVIDIA DALMORE development platform
-
-config MACH_PISMO
-       bool "Pismo board"
-       depends on ARCH_TEGRA_11x_SOC
-       select MACH_HAS_SND_SOC_TEGRA_RT5639 if SND_SOC
-       select MACH_HAS_SND_SOC_TEGRA_RT5640 if SND_SOC
-       help
-         Support for NVIDIA PISMO development platform
-
-config MACH_MACALLAN
-       bool "Macallan board"
-       depends on ARCH_TEGRA_11x_SOC
-       select MACH_HAS_SND_SOC_TEGRA_RT5639 if SND_SOC
-       select MACH_HAS_SND_SOC_TEGRA_RT5640 if SND_SOC
-       help
-         Support for NVIDIA MACALLAN development platform
-
-config MACH_TEGRA_PLUTO
-       bool "Pluto board"
-       depends on ARCH_TEGRA_11x_SOC
-       select MACH_HAS_SND_SOC_TEGRA_CS42L73 if SND_SOC
-       select MACH_HAS_SND_SOC_TEGRA_TLV320AIC326X if SND_SOC
-       help
-         Support for NVIDIA PLUTO development platform
-
-config MACH_ROTH
-       bool "Thor board"
-       depends on ARCH_TEGRA_11x_SOC
-       select MACH_HAS_SND_SOC_TEGRA_RT5639 if SND_SOC
-       select MACH_HAS_SND_SOC_TEGRA_RT5640 if SND_SOC
-       help
-         Support for NVIDIA THOR development platform
 
 choice
        prompt "Tegra platform type"
@@ -445,16 +277,13 @@ config TEGRA_GPU_DVFS
 	depends on ARCH_TEGRA_12x_SOC
 	default y
 
-config TEGRA_GK20A
-	bool "Enable the GK20A GPU on Tegra"
-	depends on ARCH_TEGRA_12x_SOC
-	depends on TEGRA_GRHOST
-	select GK20A
+config TEGRA_DVFS_RAIL_CONNECT_ALL
+	bool "Enable voltage scaling only if all rails matched by dvfs (cpu, gpu, core) are connected"
 	default y
 	help
-	  Enable support for the GK20A graphics engine on Tegra
-	  by adding a Tegra platfrom interface to the GK20A driver.
-	  The Tegra platform interface requires TEGRA_GRHOST (host1x).
+	 This option adds an extra check to enable voltage scaling. Set to y
+	 if you want to enable voltage scaling only when all the rails matched
+	 by dvfs connect successfully to the system
 
 config TEGRA_AVP_KERNEL_ON_MMU
 	bool "Use AVP MMU to relocate AVP kernel"
@@ -465,7 +294,7 @@ config TEGRA_AVP_KERNEL_ON_MMU
 
 config TEGRA_AVP_KERNEL_ON_SMMU
 	bool "Use SMMU to relocate AVP kernel"
-	depends on TEGRA_IOVMM_SMMU || TEGRA_IOMMU_SMMU
+	depends on TEGRA_IOMMU_SMMU
 	default y
 	help
 	  Use SMMU to relocate AVP kernel (nvrm_avp.bin).
@@ -651,6 +480,17 @@ config TEGRA_EHCI_BOOST_CPU_FREQ
           This value is the amount of the cpu frequency (in Mhz)
           to be boosted. If it is zero boosting frequency will not
           be enabled. This value will be used only by usb ehci driver.
+
+config TEGRA_CPU_FREQ_GOVERNOR_KERNEL_START
+	bool "Initialize CPU governor to a performance after DVFS initialization"
+	default 0
+	help
+	  During a boot up, once DVFS is initialized, there is a period of
+	  time in which the frequency could adjusted higher before the userspace
+	  configures the governor by using a more performance governor for
+	  a faster boot up. Selecting this option will make the system to choose
+	  a performance governor once the DVFS initialization is complete. Userspace
+	  or init script can override the governor chosen here.
 
 config TEGRA_DYNAMIC_PWRDET
 	bool "Enable dynamic activation of IO level auto-detection"
@@ -879,7 +719,9 @@ config TEGRA_IO_DPD
 config TEGRA_USE_DFLL_RANGE
 	int "Default CPU DFLL operating range"
 	depends on ARCH_TEGRA_HAS_CL_DVFS
-	range 0 2
+	range 0 3
+	default "0" if TEGRA_SILICON_PLATFORM && ARCH_TEGRA_21x_SOC
+	default "1" if TEGRA_SILICON_PLATFORM && ARCH_TEGRA_13x_SOC
 	default "2" if TEGRA_SILICON_PLATFORM && ARCH_TEGRA_11x_SOC
 	default "1"
 	help
@@ -889,6 +731,7 @@ config TEGRA_USE_DFLL_RANGE
 	  "1" - DFLL is used as a source for all CPU rates
 	  "2" - DFLL is used only for high rates above crossover with
 		PLL dvfs curve
+	  "3" - DFLL usage is controlled by thermal cooling device
 
 config REGULATOR_TEGRA_DFLL_BYPASS
 	bool "Use dfll bypass regulator"
@@ -977,13 +820,6 @@ config ARCH_TEGRA_VIC
 	  Say Y here if the SOC supports the Tegra Video Image Compositor.
 	  Note that this not the same as the ARM Vectored Interrupt Controller.
 
-config TEGRA_MC_DOMAINS
-	bool "Enable MC domains"
-	depends on PM_GENERIC_DOMAINS
-	default n
-	help
-	  When enabled, clock gates MC when it's not needed.
-
 config TEGRA_USE_NCT
 	bool "Enable NCT partition access"
 	help
@@ -1026,4 +862,13 @@ config TEGRA_USE_SIMON
 	default n
 	help
 	  Enable Tegra silicon state monitoring, grading, and notification.
+
+config AID_FUSE
+	bool "Support AID fuse reads"
+	default n if ARCH_TEGRA_11x_SOC || ARCH_TEGRA_14x_SOC || \
+	(ARCH_TEGRA_12x_SOC && !ARCH_TEGRA_13x_SOC)
+	default y
+	help
+	  When enabled, allows sysfs reads of the AID fuse, which contains
+	  the chip family ID and a chip-unique Tegra ID. Supported on t132+.
 endif

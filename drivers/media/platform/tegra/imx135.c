@@ -1,7 +1,7 @@
 /*
  * imx135.c - imx135 sensor driver
  *
- * Copyright (c) 2013, NVIDIA CORPORATION, All Rights Reserved.
+ * Copyright (c) 2013-2014, NVIDIA CORPORATION, All Rights Reserved.
  *
  * This program is free software; you can redistribute it and/or modify it
  * under the terms and conditions of the GNU General Public License,
@@ -55,6 +55,8 @@ struct imx135_info {
 	struct mutex			imx135_camera_lock;
 	struct dentry			*debugdir;
 	atomic_t			in_use;
+	struct imx135_eeprom_data eeprom[IMX135_EEPROM_NUM_BLOCKS];
+	u8 eeprom_buf[IMX135_EEPROM_SIZE];
 };
 
 static const struct regmap_config sensor_regmap_config = {
@@ -2075,6 +2077,161 @@ static struct imx135_reg mode_3904x2196[] = {
 	{IMX135_TABLE_END, 0x00}
 };
 
+static struct imx135_reg mode_3840x2160[] = {
+	/* software reset */
+	{0x0103, 0x01},
+	/* global settings */
+	{0x0101, 0x00},
+	{0x0105, 0x01},
+	{0x0110, 0x00},
+	{0x0220, 0x01},
+	{0x3302, 0x11},
+	{0x3833, 0x20},
+	{0x3873, 0x03},
+	{0x3893, 0x00},
+	{0x3906, 0x08},
+	{0x3907, 0x01},
+	{0x391B, 0x00},
+	{0x3C09, 0x01},
+	{0x600A, 0x00},
+	{0x3008, 0xB0},
+	{0x320A, 0x01},
+	{0x320D, 0x10},
+	{0x3216, 0x2E},
+	{0x322C, 0x02},
+	{0x3409, 0x0C},
+	{0x340C, 0x2D},
+	{0x3411, 0x39},
+	{0x3414, 0x1E},
+	{0x3427, 0x04},
+	{0x3480, 0x1E},
+	{0x3484, 0x1E},
+	{0x3488, 0x1E},
+	{0x348C, 0x1E},
+	{0x3490, 0x1E},
+	{0x3494, 0x1E},
+	{0x3511, 0x8F},
+	{0x364F, 0x2D},
+	/* Clock Setting */
+	{0x011E, 0x18},
+	{0x011F, 0x00},
+	{0x0301, 0x05},
+	{0x0303, 0x01},
+	{0x0305, 0x0C},
+	{0x0309, 0x05},
+	{0x030B, 0x01},
+	{0x030C, 0x01},
+	{0x030D, 0xC2},
+	{0x030E, 0x01},
+	{0x3A06, 0x11},
+	/* Mode Settings */
+	{0x0108, 0x03},
+	{0x0112, 0x0E},
+	{0x0113, 0x0A},
+	{0x0381, 0x01},
+	{0x0383, 0x01},
+	{0x0385, 0x01},
+	{0x0387, 0x01},
+	{0x0390, 0x00},
+	{0x0391, 0x11},
+	{0x0392, 0x00},
+	{0x0401, 0x00},
+	{0x0404, 0x00},
+	{0x0405, 0x10},
+	{0x4082, 0x01},
+	{0x4083, 0x01},
+	{0x7006, 0x04},
+	/* Optinal/Function settings */
+	{0x0700, 0x00},
+	{0x3A63, 0x00},
+	{0x4100, 0xF8},
+	{0x4203, 0xFF},
+	{0x4344, 0x00},
+	{0x441C, 0x01},
+	/* Size Setting */
+	{0x0340, 0x0A},
+	{0x0341, 0x40},
+	{0x0342, 0x11},
+	{0x0343, 0xDC},
+	{0x0344, 0x00},
+	{0x0345, 0x9C},
+	{0x0346, 0x01},
+	{0x0347, 0xD0},
+	{0x0348, 0x0F},
+	{0x0349, 0xD3},
+	{0x034A, 0x0A},
+	{0x034B, 0x5F},
+	{0x034C, 0x0F},
+	{0x034D, 0x00},
+	{0x034E, 0x08},
+	{0x034F, 0x70},
+	{0x0350, 0x00},
+	{0x0351, 0x00},
+	{0x0352, 0x00},
+	{0x0353, 0x00},
+	{0x0354, 0x0F},
+	{0x0355, 0x00},
+	{0x0356, 0x08},
+	{0x0357, 0x70},
+	{0x301D, 0x30},
+	{0x3310, 0x0F},
+	{0x3311, 0x38},
+	{0x3312, 0x08},
+	{0x3313, 0x90},
+	{0x331C, 0x0F},
+	{0x331D, 0x32},
+	{0x4084, 0x00},
+	{0x4085, 0x00},
+	{0x4086, 0x00},
+	{0x4087, 0x00},
+	{0x4400, 0x00},
+	/* Global Timing Setting */
+	{0x0830, 0x87},
+	{0x0831, 0x3F},
+	{0x0832, 0x67},
+	{0x0833, 0x3F},
+	{0x0834, 0x3F},
+	{0x0835, 0x4F},
+	{0x0836, 0xDF},
+	{0x0837, 0x47},
+	{0x0839, 0x1F},
+	{0x083A, 0x17},
+	{0x083B, 0x02},
+	/* Integration Time Setting */
+	{0x0202, 0x0A},
+	{0x0203, 0x3C},
+	/* Gain Setting */
+	{0x0205, 0x00},
+	{0x020E, 0x01},
+	{0x020F, 0x00},
+	{0x0210, 0x01},
+	{0x0211, 0x00},
+	{0x0212, 0x01},
+	{0x0213, 0x00},
+	{0x0214, 0x01},
+	{0x0215, 0x00},
+	/* HDR Setting */
+	{0x0230, 0x00},
+	{0x0231, 0x00},
+	{0x0233, 0x00},
+	{0x0234, 0x00},
+	{0x0235, 0x40},
+	{0x0238, 0x01},
+	{0x0239, 0x04},
+	{0x023B, 0x00},
+	{0x023C, 0x01},
+	{0x33B0, 0x0F},
+	{0x33B1, 0x38},
+	{0x33B3, 0x01},
+	{0x33B4, 0x01},
+	{0x3800, 0x00},
+	{0x3A43, 0x01},
+	/* stream on */
+	{0x0100, 0x01},
+	{IMX135_TABLE_WAIT_MS, IMX135_WAIT_MS},
+	{IMX135_TABLE_END, 0x00}
+};
+
 static struct imx135_reg mode_2080x1560[] = {
 	/* software reset */
 	{0x0103, 0x01},
@@ -2772,6 +2929,7 @@ enum {
 	IMX135_MODE_1280X720,
 	IMX135_MODE_2616X1472,
 	IMX135_MODE_3896X2192,
+	IMX135_MODE_3840X2160,
 	IMX135_MODE_2104X1560,
 	IMX135_MODE_QUALITY_HDR,
 	IMX135_MODE_QUALITY,
@@ -2788,6 +2946,7 @@ static struct imx135_reg *mode_table[] = {
 	[IMX135_MODE_1280X720]  = mode_1280x720,
 	[IMX135_MODE_2616X1472]  = mode_2616x1472,
 	[IMX135_MODE_3896X2192]  = mode_3896x2192,
+	[IMX135_MODE_3840X2160] = mode_3840x2160,
 	[IMX135_MODE_2104X1560]  = mode_2104x1560,
 	[IMX135_MODE_QUALITY_HDR]  = mode_quality_hdr,
 	[IMX135_MODE_QUALITY]  = mode_quality,
@@ -2992,6 +3151,9 @@ imx135_set_mode(struct imx135_info *info, struct imx135_mode *mode)
 		quality_hdr = 1;
 	} else if (mode->xres == 3896 && mode->yres == 2192) {
 		sensor_mode = IMX135_MODE_3896X2192;
+		quality_hdr = 1;
+	} else if (mode->xres == 3840 && mode->yres == 2160) {
+		sensor_mode = IMX135_MODE_3840X2160;
 		quality_hdr = 1;
 	} else if (mode->xres == 2104 && mode->yres == 1560) {
 		sensor_mode = IMX135_MODE_2104X1560;
@@ -3281,6 +3443,66 @@ static int imx135_mclk_enable(struct imx135_info *info)
 	return err;
 }
 
+static int
+imx135_eeprom_device_release(struct imx135_info *info)
+{
+	int i;
+
+	for (i = 0; i < IMX135_EEPROM_NUM_BLOCKS; i++) {
+		if (info->eeprom[i].i2c_client != NULL) {
+			i2c_unregister_device(info->eeprom[i].i2c_client);
+			info->eeprom[i].i2c_client = NULL;
+		}
+	}
+
+	return 0;
+}
+
+static int
+imx135_eeprom_device_init(struct imx135_info *info)
+{
+	char *dev_name = "eeprom_imx135";
+	static struct regmap_config eeprom_regmap_config = {
+		.reg_bits = 8,
+		.val_bits = 8,
+	};
+	int i;
+	int err;
+
+	for (i = 0; i < IMX135_EEPROM_NUM_BLOCKS; i++) {
+		info->eeprom[i].adap = i2c_get_adapter(
+				info->i2c_client->adapter->nr);
+		memset(&info->eeprom[i].brd, 0, sizeof(info->eeprom[i].brd));
+		strncpy(info->eeprom[i].brd.type, dev_name,
+				sizeof(info->eeprom[i].brd.type));
+		info->eeprom[i].brd.addr = IMX135_EEPROM_ADDRESS + i;
+		info->eeprom[i].i2c_client = i2c_new_device(
+				info->eeprom[i].adap, &info->eeprom[i].brd);
+
+		info->eeprom[i].regmap = devm_regmap_init_i2c(
+			info->eeprom[i].i2c_client, &eeprom_regmap_config);
+		if (IS_ERR(info->eeprom[i].regmap)) {
+			err = PTR_ERR(info->eeprom[i].regmap);
+			imx135_eeprom_device_release(info);
+			return err;
+		}
+	}
+
+	return 0;
+}
+
+static int
+imx135_read_eeprom(struct imx135_info *info, u8 reg, u16 length, u8 *buf)
+{
+	return regmap_raw_read(info->eeprom[0].regmap, reg, &buf[reg], length);
+}
+
+static int
+imx135_write_eeprom(struct imx135_info *info, u16 addr, u8 val)
+{
+	return regmap_write(info->eeprom[addr >> 8].regmap, addr & 0xFF, val);
+}
+
 static long
 imx135_ioctl(struct file *file,
 			 unsigned int cmd, unsigned long arg)
@@ -3288,8 +3510,8 @@ imx135_ioctl(struct file *file,
 	int err = 0;
 	struct imx135_info *info = file->private_data;
 
-	switch (cmd) {
-	case IMX135_IOCTL_SET_POWER:
+	switch (_IOC_NR(cmd)) {
+	case _IOC_NR(IMX135_IOCTL_SET_POWER):
 		if (!info->pdata)
 			break;
 		if (arg && info->pdata->power_on) {
@@ -3304,7 +3526,7 @@ imx135_ioctl(struct file *file,
 			imx135_mclk_disable(info);
 		}
 		break;
-	case IMX135_IOCTL_SET_MODE:
+	case _IOC_NR(IMX135_IOCTL_SET_MODE):
 	{
 		struct imx135_mode mode;
 		if (copy_from_user(&mode, (const void __user *)arg,
@@ -3314,13 +3536,13 @@ imx135_ioctl(struct file *file,
 		}
 		return imx135_set_mode(info, &mode);
 	}
-	case IMX135_IOCTL_SET_FRAME_LENGTH:
+	case _IOC_NR(IMX135_IOCTL_SET_FRAME_LENGTH):
 		return imx135_set_frame_length(info, (u32)arg, true);
-	case IMX135_IOCTL_SET_COARSE_TIME:
+	case _IOC_NR(IMX135_IOCTL_SET_COARSE_TIME):
 		return imx135_set_coarse_time(info, (u32)arg, true);
-	case IMX135_IOCTL_SET_GAIN:
+	case _IOC_NR(IMX135_IOCTL_SET_GAIN):
 		return imx135_set_gain(info, (u16)arg, true);
-	case IMX135_IOCTL_GET_STATUS:
+	case _IOC_NR(IMX135_IOCTL_GET_STATUS):
 	{
 		u8 status;
 
@@ -3333,7 +3555,7 @@ imx135_ioctl(struct file *file,
 		}
 		return 0;
 	}
-	case IMX135_IOCTL_GET_SENSORDATA:
+	case _IOC_NR(IMX135_IOCTL_GET_SENSORDATA):
 	{
 		err = imx135_get_sensor_id(info);
 
@@ -3349,7 +3571,7 @@ imx135_ioctl(struct file *file,
 		}
 		return 0;
 	}
-	case IMX135_IOCTL_SET_GROUP_HOLD:
+	case _IOC_NR(IMX135_IOCTL_SET_GROUP_HOLD):
 	{
 		struct imx135_ae ae;
 		if (copy_from_user(&ae, (const void __user *)arg,
@@ -3359,7 +3581,7 @@ imx135_ioctl(struct file *file,
 		}
 		return imx135_set_group_hold(info, &ae);
 	}
-	case IMX135_IOCTL_SET_HDR_COARSE_TIME:
+	case _IOC_NR(IMX135_IOCTL_SET_HDR_COARSE_TIME):
 	{
 		struct imx135_hdr values;
 
@@ -3374,7 +3596,7 @@ imx135_ioctl(struct file *file,
 		err = imx135_set_hdr_coarse_time(info, &values);
 		break;
 	}
-	case IMX135_IOCTL_SET_FLASH_MODE:
+	case _IOC_NR(IMX135_IOCTL_SET_FLASH_MODE):
 	{
 		struct imx135_flash_control values;
 
@@ -3389,9 +3611,46 @@ imx135_ioctl(struct file *file,
 		err = imx135_set_flash_control(info, &values);
 		break;
 	}
-	case IMX135_IOCTL_GET_FLASH_CAP:
+	case _IOC_NR(IMX135_IOCTL_GET_FLASH_CAP):
 		err = imx135_get_flash_cap(info);
 		break;
+
+	case NVC_IOCTL_GET_EEPROM_DATA:
+	{
+		imx135_read_eeprom(info,
+			0,
+			IMX135_EEPROM_SIZE,
+			info->eeprom_buf);
+
+		if (copy_to_user((void __user *)arg,
+			info->eeprom_buf, IMX135_EEPROM_SIZE)) {
+			dev_err(&info->i2c_client->dev,
+				"%s:Failed to copy status to user\n",
+				__func__);
+			return -EFAULT;
+		}
+		return 0;
+	}
+
+	case NVC_IOCTL_SET_EEPROM_DATA:
+	{
+		int i;
+		if (copy_from_user(info->eeprom_buf,
+			(const void __user *)arg, IMX135_EEPROM_SIZE)) {
+			dev_err(&info->i2c_client->dev,
+					"%s:Failed to read from user buffer\n",
+					__func__);
+			return -EFAULT;
+		}
+		for (i = 0; i < IMX135_EEPROM_SIZE; i++) {
+			imx135_write_eeprom(info,
+				i,
+				info->eeprom_buf[i]);
+			msleep(20);
+		}
+		return 0;
+	}
+
 	default:
 		pr_err("%s:unknown cmd.\n", __func__);
 		err = -EINVAL;
@@ -3728,6 +3987,9 @@ static const struct file_operations imx135_fileops = {
 	.owner = THIS_MODULE,
 	.open = imx135_open,
 	.unlocked_ioctl = imx135_ioctl,
+#ifdef CONFIG_COMPAT
+	.compat_ioctl = imx135_ioctl,
+#endif
 	.release = imx135_release,
 };
 
@@ -3835,6 +4097,15 @@ imx135_probe(struct i2c_client *client,
 	}
 
 	i2c_set_clientdata(client, info);
+
+	/* eeprom interface */
+	err = imx135_eeprom_device_init(info);
+	if (err) {
+		dev_err(&client->dev,
+			"Failed to allocate eeprom register map: %d\n", err);
+		return err;
+	}
+
 	/* create debugfs interface */
 	imx135_create_debugfs(info);
 	return 0;
@@ -3855,6 +4126,7 @@ imx135_remove(struct i2c_client *client)
 	imx135_power_put(&info->power);
 
 	imx135_remove_debugfs(info);
+	imx135_eeprom_device_release(info);
 	return 0;
 }
 

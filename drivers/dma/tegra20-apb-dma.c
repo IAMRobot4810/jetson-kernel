@@ -1,7 +1,7 @@
 /*
  * DMA driver for Nvidia's Tegra20 APB DMA controller.
  *
- * Copyright (c) 2012-13, NVIDIA CORPORATION.  All rights reserved.
+ * Copyright (c) 2012-2014, NVIDIA CORPORATION.  All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify it
  * under the terms and conditions of the GNU General Public License,
@@ -29,13 +29,14 @@
 #include <linux/module.h>
 #include <linux/of.h>
 #include <linux/of_device.h>
+#include <linux/of_dma.h>
 #include <linux/platform_device.h>
 #include <linux/pm.h>
 #include <linux/pm_runtime.h>
 #include <linux/slab.h>
 #include <linux/clk/tegra.h>
+#include <linux/tegra_pm_domains.h>
 
-#include <mach/pm_domains.h>
 #include "dmaengine.h"
 
 #define TEGRA_APBDMA_GENERAL			0x0
@@ -159,6 +160,7 @@ struct tegra_dma_sg_req {
 	struct tegra_dma_channel_regs	ch_regs;
 	int				req_len;
 	bool				configured;
+	bool				skipped;
 	bool				last_sg;
 	bool				half_done;
 	struct list_head		node;
@@ -212,6 +214,7 @@ struct tegra_dma_channel {
 	void			*callback_param;
 
 	/* Channel-slave specific configuration */
+	unsigned int slave_id;
 	struct dma_slave_config dma_sconfig;
 	struct tegra_dma_channel_regs	channel_reg;
 };
@@ -352,6 +355,8 @@ static int tegra_dma_slave_config(struct dma_chan *dc,
 	}
 
 	memcpy(&tdc->dma_sconfig, sconfig, sizeof(*sconfig));
+	if (!tdc->slave_id)
+		tdc->slave_id = sconfig->slave_id;
 	tdc->config_init = true;
 	return 0;
 }
@@ -470,6 +475,7 @@ static void tegra_dma_configure_for_next(struct tegra_dma_channel *tdc,
 	if (status & TEGRA_APBDMA_STATUS_ISE_EOC) {
 		dev_err(tdc2dev(tdc),
 			"Skipping new configuration as interrupt is pending\n");
+		nsg_req->skipped = true;
 		tegra_dma_resume(tdc);
 		return;
 	}
@@ -483,6 +489,7 @@ static void tegra_dma_configure_for_next(struct tegra_dma_channel *tdc,
 	tdc_write(tdc, TEGRA_APBDMA_CHAN_CSR,
 				nsg_req->ch_regs.csr | TEGRA_APBDMA_CSR_ENB);
 	nsg_req->configured = true;
+	nsg_req->skipped = false;
 
 	tegra_dma_resume(tdc);
 }
@@ -498,6 +505,7 @@ static void tdc_start_head_req(struct tegra_dma_channel *tdc)
 					typeof(*sg_req), node);
 	tegra_dma_start(tdc, sg_req);
 	sg_req->configured = true;
+	sg_req->skipped = false;
 	tdc->busy = true;
 }
 
@@ -564,7 +572,7 @@ static bool handle_continuous_head_request(struct tegra_dma_channel *tdc,
 	 * looping of transfer can not continue.
 	 */
 	hsgreq = list_first_entry(&tdc->pending_sg_req, typeof(*hsgreq), node);
-	if (!hsgreq->configured) {
+	if (!hsgreq->configured && !hsgreq->skipped) {
 		tegra_dma_stop(tdc);
 		dev_err(tdc2dev(tdc), "Error in dma transfer, aborting dma\n");
 		tegra_dma_abort_all(tdc);
@@ -632,6 +640,7 @@ static void handle_cont_sngl_cycle_dma_done(struct tegra_dma_channel *tdc,
 	if (!list_is_last(&sgreq->node, &tdc->pending_sg_req)) {
 		list_move_tail(&sgreq->node, &tdc->pending_sg_req);
 		sgreq->configured = false;
+		sgreq->skipped = false;
 		st = handle_continuous_head_request(tdc, sgreq, to_terminate);
 		if (!st)
 			dma_desc->dma_status = DMA_ERROR;
@@ -987,7 +996,7 @@ static struct dma_async_tx_descriptor *tegra_dma_prep_slave_sg(
 	ahb_seq |= TEGRA_APBDMA_AHBSEQ_BUS_WIDTH_32;
 
 	csr |= TEGRA_APBDMA_CSR_ONCE | TEGRA_APBDMA_CSR_FLOW;
-	csr |= tdc->dma_sconfig.slave_id << TEGRA_APBDMA_CSR_REQ_SEL_SHIFT;
+	csr |= tdc->slave_id << TEGRA_APBDMA_CSR_REQ_SEL_SHIFT;
 	if (flags & DMA_PREP_INTERRUPT)
 		csr |= TEGRA_APBDMA_CSR_IE_EOC;
 
@@ -1041,6 +1050,7 @@ static struct dma_async_tx_descriptor *tegra_dma_prep_slave_sg(
 		sg_req->ch_regs.apb_seq = apb_seq;
 		sg_req->ch_regs.ahb_seq = ahb_seq;
 		sg_req->configured = false;
+		sg_req->skipped = false;
 		sg_req->last_sg = false;
 		sg_req->dma_desc = dma_desc;
 		sg_req->req_len = len;
@@ -1136,7 +1146,7 @@ struct dma_async_tx_descriptor *tegra_dma_prep_dma_cyclic(
 	csr |= TEGRA_APBDMA_CSR_FLOW;
 	if (flags & DMA_PREP_INTERRUPT)
 		csr |= TEGRA_APBDMA_CSR_IE_EOC;
-	csr |= tdc->dma_sconfig.slave_id << TEGRA_APBDMA_CSR_REQ_SEL_SHIFT;
+	csr |= tdc->slave_id << TEGRA_APBDMA_CSR_REQ_SEL_SHIFT;
 
 	apb_seq |= TEGRA_APBDMA_APBSEQ_WRAP_WORD_1;
 
@@ -1175,6 +1185,7 @@ struct dma_async_tx_descriptor *tegra_dma_prep_dma_cyclic(
 		sg_req->ch_regs.apb_seq = apb_seq;
 		sg_req->ch_regs.ahb_seq = ahb_seq;
 		sg_req->configured = false;
+		sg_req->skipped = false;
 		sg_req->half_done = false;
 		sg_req->last_sg = false;
 		sg_req->dma_desc = dma_desc;
@@ -1254,6 +1265,24 @@ static void tegra_dma_free_chan_resources(struct dma_chan *dc)
 		list_del(&sg_req->node);
 		kfree(sg_req);
 	}
+	tdc->slave_id = 0;
+}
+
+static struct dma_chan *tegra_dma_of_xlate(struct of_phandle_args *dma_spec,
+					   struct of_dma *ofdma)
+{
+	struct tegra_dma *tdma = ofdma->of_dma_data;
+	struct dma_chan *chan;
+	struct tegra_dma_channel *tdc;
+
+	chan = dma_get_any_slave_channel(&tdma->dma_dev);
+	if (!chan)
+		return NULL;
+
+	tdc = to_tegra_dma_chan(chan);
+	tdc->slave_id = dma_spec->args[0];
+
+	return chan;
 }
 
 /* Tegra20 specific DMA controller information */
@@ -1494,10 +1523,20 @@ static int tegra_dma_probe(struct platform_device *pdev)
 		goto err_irq;
 	}
 
+	ret = of_dma_controller_register(pdev->dev.of_node,
+					 tegra_dma_of_xlate, tdma);
+	if (ret < 0) {
+		dev_err(&pdev->dev,
+			"Tegra20 APB DMA OF registration failed %d\n", ret);
+		goto err_unregister_dma_dev;
+	}
+
 	dev_info(&pdev->dev, "Tegra20 APB DMA driver register %d channels\n",
 			cdata->nr_channels);
 	return 0;
 
+err_unregister_dma_dev:
+	dma_async_device_unregister(&tdma->dma_dev);
 err_irq:
 	while (--i >= 0) {
 		struct tegra_dma_channel *tdc = &tdma->channels[i];

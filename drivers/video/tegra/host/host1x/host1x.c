@@ -3,7 +3,7 @@
  *
  * Tegra Graphics Host Driver Entrypoint
  *
- * Copyright (c) 2010-2013, NVIDIA Corporation. All rights reserved.
+ * Copyright (c) 2010-2014, NVIDIA Corporation. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify it
  * under the terms and conditions of the GNU General Public License,
@@ -31,6 +31,7 @@
 #include <linux/of_device.h>
 #include <linux/of_platform.h>
 #include <linux/tegra-soc.h>
+#include <linux/tegra_pm_domains.h>
 
 #include "dev.h"
 #include <trace/events/nvhost.h>
@@ -38,14 +39,11 @@
 #include <linux/nvhost.h>
 #include <linux/nvhost_ioctl.h>
 
-#include <mach/pm_domains.h>
-
 #include "debug.h"
 #include "bus_client.h"
 #include "nvhost_acm.h"
 #include "nvhost_channel.h"
 #include "nvhost_job.h"
-#include "nvhost_memmgr.h"
 
 #ifdef CONFIG_TEGRA_GRHOST_SYNC
 #include "nvhost_sync.h"
@@ -53,8 +51,6 @@
 
 #include "nvhost_scale.h"
 #include "chip_support.h"
-#include "t114/t114.h"
-#include "t148/t148.h"
 #include "t124/t124.h"
 
 #define DRIVER_NAME		"host1x"
@@ -228,10 +224,35 @@ static int nvhost_ioctl_ctrl_sync_fence_create(struct nvhost_ctrl_userctx *ctx,
 		}
 	}
 
-	err = nvhost_sync_create_fence(&ctx->dev->syncpt, pts, args->num_pts,
-				       name, &args->fence_fd);
+	err = nvhost_sync_create_fence_fd(ctx->dev->dev, pts, args->num_pts,
+					  name, &args->fence_fd);
 out:
 	kfree(pts);
+	return err;
+#else
+	return -EINVAL;
+#endif
+}
+
+static int nvhost_ioctl_ctrl_sync_fence_set_name(
+	struct nvhost_ctrl_userctx *ctx,
+	struct nvhost_ctrl_sync_fence_name_args *args)
+{
+#ifdef CONFIG_TEGRA_GRHOST_SYNC
+	int err;
+	char name[32];
+	const char __user *args_name =
+		(const char __user *)(uintptr_t)args->name;
+
+	if (args_name) {
+		if (strncpy_from_user(name, args_name, sizeof(name)) < 0)
+			return -EFAULT;
+		name[sizeof(name) - 1] = '\0';
+	} else {
+		name[0] = '\0';
+	}
+
+	err = nvhost_sync_fence_set_name(args->fence_fd, name);
 	return err;
 #else
 	return -EINVAL;
@@ -405,6 +426,9 @@ static long nvhost_ctrlctl(struct file *filp,
 	case NVHOST_IOCTL_CTRL_SYNC_FENCE_CREATE:
 		err = nvhost_ioctl_ctrl_sync_fence_create(priv, (void *)buf);
 		break;
+	case NVHOST_IOCTL_CTRL_SYNC_FENCE_SET_NAME:
+		err = nvhost_ioctl_ctrl_sync_fence_set_name(priv, (void *)buf);
+		break;
 	case NVHOST_IOCTL_CTRL_MODULE_MUTEX:
 		err = nvhost_ioctl_ctrl_module_mutex(priv, (void *)buf);
 		break;
@@ -521,7 +545,8 @@ static inline int nvhost_set_sysfs_capability_node(
 
 static int nvhost_user_init(struct nvhost_master *host)
 {
-	int err, devno;
+	dev_t devno;
+	int err;
 
 	host->nvhost_class = class_create(THIS_MODULE, IFACE_NAME);
 	if (IS_ERR(host->nvhost_class)) {
@@ -593,16 +618,10 @@ fail:
 	return err;
 }
 
-struct nvhost_channel *nvhost_alloc_channel(struct platform_device *dev)
+void nvhost_set_chanops(struct nvhost_channel *ch)
 {
-	return host_device_op().alloc_nvhost_channel(dev);
+	host_device_op().set_nvhost_chanops(ch);
 }
-
-void nvhost_free_channel(struct nvhost_channel *ch)
-{
-	host_device_op().free_nvhost_channel(ch);
-}
-
 static void nvhost_free_resources(struct nvhost_master *host)
 {
 	kfree(host->intr.syncpt);
@@ -630,43 +649,12 @@ static int nvhost_alloc_resources(struct nvhost_master *host)
 }
 
 static struct of_device_id tegra_host1x_of_match[] = {
-#ifdef TEGRA_11X_OR_HIGHER_CONFIG
-	{ .compatible = "nvidia,tegra114-host1x",
-		.data = (struct nvhost_device_data *)&t11_host1x_info },
-#endif
-#ifdef TEGRA_14X_OR_HIGHER_CONFIG
-	{ .compatible = "nvidia,tegra148-host1x",
-		.data = (struct nvhost_device_data *)&t14_host1x_info },
-#endif
 #ifdef TEGRA_12X_OR_HIGHER_CONFIG
 	{ .compatible = "nvidia,tegra124-host1x",
 		.data = (struct nvhost_device_data *)&t124_host1x_info },
 #endif
 	{ },
 };
-
-void nvhost_host1x_update_clk(struct platform_device *pdev)
-{
-	struct nvhost_device_data *pdata = NULL;
-	struct nvhost_device_profile *profile;
-
-	/* There are only two chips which need this workaround, so hardcode */
-#ifdef TEGRA_11X_OR_HIGHER_CONFIG
-	if (tegra_get_chipid() == TEGRA_CHIPID_TEGRA11)
-		pdata = &t11_gr3d_info;
-#endif
-#ifdef TEGRA_14X_OR_HIGHER_CONFIG
-	if (tegra_get_chipid() == TEGRA_CHIPID_TEGRA14)
-		pdata = &t14_gr3d_info;
-#endif
-	if (!pdata)
-		return;
-
-	profile = pdata->power_profile;
-
-	if (profile && profile->actmon)
-		actmon_op().update_sample_period(profile->actmon);
-}
 
 int nvhost_host1x_finalize_poweron(struct platform_device *dev)
 {
@@ -752,13 +740,6 @@ static int nvhost_probe(struct platform_device *dev)
 		goto fail;
 	}
 
-	host->memmgr = nvhost_memmgr_alloc_mgr();
-	if (!host->memmgr) {
-		dev_err(&dev->dev, "unable to create nvmap client\n");
-		err = -EIO;
-		goto fail;
-	}
-
 	err = nvhost_syncpt_init(dev, &host->syncpt);
 	if (err)
 		goto fail;
@@ -775,20 +756,29 @@ static int nvhost_probe(struct platform_device *dev)
 	if (err)
 		goto fail;
 
+	err = nvhost_alloc_channels(host);
+	if (err)
+		goto fail;
+
 #ifdef CONFIG_PM_GENERIC_DOMAINS
 	pdata->pd.name = "tegra-host1x";
 	err = nvhost_module_add_domain(&pdata->pd, dev);
-
 #endif
+
+	mutex_init(&host->timeout_mutex);
 
 	nvhost_module_busy(dev);
 
 	nvhost_syncpt_reset(&host->syncpt);
-	nvhost_intr_start(&host->intr, clk_get_rate(pdata->clk[0]));
+	if (tegra_cpu_is_asim())
+		/* for simulation, use a fake clock rate */
+		nvhost_intr_start(&host->intr, 12000000);
+	else
+		nvhost_intr_start(&host->intr, clk_get_rate(pdata->clk[0]));
 
 	nvhost_device_list_init();
-	pdata->nvhost_timeout_default =
-			CONFIG_TEGRA_GRHOST_DEFAULT_TIMEOUT;
+	pdata->nvhost_timeout_default = tegra_platform_is_linsim() ?
+			0 : CONFIG_TEGRA_GRHOST_DEFAULT_TIMEOUT;
 	nvhost_debug_init(host);
 
 	nvhost_module_idle(dev);
@@ -798,8 +788,6 @@ static int nvhost_probe(struct platform_device *dev)
 
 fail:
 	nvhost_free_resources(host);
-	if (host->memmgr)
-		nvhost_memmgr_put_mgr(host->memmgr);
 	kfree(host);
 	return err;
 }
@@ -816,25 +804,48 @@ static int __exit nvhost_remove(struct platform_device *dev)
 #else
 	nvhost_module_disable_clk(&dev->dev);
 #endif
+	nvhost_channel_list_free(host);
+
 	return 0;
 }
 
 #ifdef CONFIG_PM
+
+/*
+ * FIXME: Genpd disables the runtime pm while preparing for system
+ * suspend. As host1x clients may need host1x in suspend sequence
+ * for register reads/writes or syncpoint increments, we need to
+ * re-enable pm_runtime. As we *must* balance pm_runtime counter,
+ * we drop the reference in suspend complete callback, right before
+ * the genpd re-enables runtime pm.
+ *
+ * We should revisit the power code as this is hacky and
+ * caused by the way we use power domains.
+ */
+
+static int nvhost_suspend_prepare(struct device *dev)
+{
+	pm_runtime_enable(dev);
+	return 0;
+}
+
+static void nvhost_suspend_complete(struct device *dev)
+{
+	__pm_runtime_disable(dev, false);
+}
+
 static int nvhost_suspend(struct device *dev)
 {
 	struct platform_device *pdev = to_platform_device(dev);
-	struct nvhost_master *host = nvhost_get_private_data(pdev);
-	int ret = 0;
 
 	nvhost_module_enable_clk(dev);
 	power_off_host(pdev);
 	clock_off_host(pdev);
 	nvhost_module_disable_clk(dev);
 
-	ret = nvhost_module_suspend(&host->dev->dev);
-	dev_info(dev, "suspend status: %d\n", ret);
+	dev_info(dev, "suspended\n");
 
-	return ret;
+	return 0;
 }
 
 static int nvhost_resume(struct device *dev)
@@ -852,8 +863,10 @@ static int nvhost_resume(struct device *dev)
 }
 
 static const struct dev_pm_ops host1x_pm_ops = {
-	.suspend = nvhost_suspend,
-	.resume = nvhost_resume,
+	.prepare = nvhost_suspend_prepare,
+	.complete = nvhost_suspend_complete,
+	.suspend_late = nvhost_suspend,
+	.resume_early = nvhost_resume,
 };
 #endif /* CONFIG_PM */
 

@@ -26,6 +26,9 @@
 #include <linux/nvhost.h>
 #include <linux/atomic.h>
 
+/* when searching for free syncpt id, start from this base */
+#define NVHOST_FREE_SYNCPT_BASE 1
+
 struct nvhost_syncpt;
 
 /* Attribute struct for sysfs min and max attributes */
@@ -36,7 +39,10 @@ struct nvhost_syncpt_attr {
 };
 
 struct nvhost_syncpt {
+	bool *assigned;
+	bool *client_managed;
 	struct kobject *kobj;
+	struct mutex syncpt_mutex;
 	atomic_t *min_val;
 	atomic_t *max_val;
 	u32 *base_val;
@@ -50,6 +56,7 @@ struct nvhost_syncpt {
 	struct nvhost_syncpt_attr invalid_max_attr;
 	struct nvhost_syncpt_attr invalid_name_attr;
 	struct nvhost_syncpt_attr invalid_syncpt_type_attr;
+	struct nvhost_syncpt_attr invalid_assigned_attr;
 #endif
 };
 
@@ -118,6 +125,7 @@ void nvhost_syncpt_cpu_incr(struct nvhost_syncpt *sp, u32 id);
 
 u32 nvhost_syncpt_update_min(struct nvhost_syncpt *sp, u32 id);
 bool nvhost_syncpt_is_expired(struct nvhost_syncpt *sp, u32 id, u32 thresh);
+bool nvhost_is_syncpt_assigned(struct nvhost_syncpt *sp, u32 id);
 int nvhost_syncpt_compare(struct nvhost_syncpt *sp, u32 id,
 				u32 thresh_a, u32 thresh_b);
 
@@ -126,12 +134,14 @@ void nvhost_syncpt_save(struct nvhost_syncpt *sp);
 void nvhost_syncpt_reset(struct nvhost_syncpt *sp);
 void nvhost_syncpt_reset_client(struct platform_device *pdev);
 
+const char *nvhost_syncpt_get_name_from_id(int id);
+int nvhost_syncpt_read_check(struct nvhost_syncpt *sp, u32 id, u32 *val);
 u32 nvhost_syncpt_read(struct nvhost_syncpt *sp, u32 id);
 u32 nvhost_syncpt_read_wait_base(struct nvhost_syncpt *sp, u32 id);
 void nvhost_syncpt_cpu_set_wait_base(struct platform_device *pdev, u32 id,
 					u32 val);
 
-void nvhost_syncpt_incr(struct nvhost_syncpt *sp, u32 id);
+int nvhost_syncpt_incr(struct nvhost_syncpt *sp, u32 id);
 
 int nvhost_syncpt_wait_timeout(struct nvhost_syncpt *sp, u32 id, u32 thresh,
 			u32 timeout, u32 *value, struct timespec *ts,
